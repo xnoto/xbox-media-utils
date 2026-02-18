@@ -82,6 +82,7 @@ ignore = [
     "E501",  # Line too long (handled by formatter)
     "SIM",   # flake8-simplify (too strict for legacy code)
     "UP007", # Python 3.9 doesn't support X | Y syntax for Optional types
+    "UP045", # Python 3.9 doesn't support X | None syntax
 ]
 
 [tool.ruff.lint.pydocstyle]
