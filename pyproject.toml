@@ -57,6 +57,7 @@ dev = [
 [project.scripts]
 xbox-recode = "xbox_media_utils.recode:main"
 xbox-import = "xbox_media_utils.import_:main"
+xbox-plex-scan = "xbox_media_utils.plex:main"
 
 [project.urls]
 Homepage = "https://github.com/xnoto/xbox-media-utils"

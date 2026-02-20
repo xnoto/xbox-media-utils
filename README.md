@@ -79,16 +79,45 @@ xbox-import Movie/ --dry-run
 - Sets ownership on destination
 - Creates parent directories as needed
 
+### xbox-plex-scan
+
+Trigger Plex library scans via HTTP API. Useful after importing or moving files.
+
+```bash
+# Partial scan by path (auto-detects library section)
+xbox-plex-scan /path/to/library/Some.Movie.2024
+
+# Full scan specific section keys
+xbox-plex-scan --sections 6 9 10
+
+# List all library sections
+xbox-plex-scan --list
+```
+
+**What it does:**
+
+- Resolves filesystem paths to Plex library sections
+- Triggers partial scans (by path) or full scans (by section key)
+- Uses Plex HTTP API with token from env var or Preferences.xml
+
 ## Configuration
 
 Environment variables (optional):
 
 ```bash
+# General
 XBOX_PLEX_ROOT=~/plex                    # Default: ~/plex
 XBOX_PLEX_USER=plex                      # Default: plex
 XBOX_PLEX_GROUP=media                    # Default: libstoragemgmt
+
+# Logging
 XBOX_RECODE_LOG_DIR=/var/log/recode      # Default: /var/log/xbox-recode
 XBOX_IMPORT_LOG_DIR=/var/log/import      # Default: /var/log/xbox-import
+
+# Plex Scanner
+XBOX_PLEX_URL=http://localhost:32400     # Plex server URL
+XBOX_PLEX_TOKEN=xxxxxxxx                 # Plex auth token (or use PLEX_TOKEN)
+XBOX_PLEX_PREFS_PATH=/var/lib/plexmediaserver/...  # Path to Preferences.xml
 ```
 
 ## Requirements
