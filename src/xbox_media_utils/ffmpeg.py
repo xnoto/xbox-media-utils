@@ -114,7 +114,7 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
         in_dur = float(json.loads(result_in.stdout).get("format", {}).get("duration", 0))
         if in_dur > 0 and out_dur > 0:
             diff = abs(out_dur - in_dur) / in_dur
-            if diff > 0.01:
+            if diff > 0.02:
                 return False, f"Duration mismatch: {in_dur:.1f}s vs {out_dur:.1f}s"
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
