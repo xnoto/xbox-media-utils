@@ -37,6 +37,8 @@ jobs:
       #   run: mypy src/xbox_media_utils
 
       - name: Run pre-commit hooks
+        env:
+          SKIP: no-commit-to-branch
         run: |
           pre-commit install
           pre-commit run --all-files --show-diff-on-failure
