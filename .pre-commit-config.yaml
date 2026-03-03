@@ -19,6 +19,24 @@ repos:
       - id: check-case-conflict
       - id: detect-private-key
       - id: mixed-line-ending
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: package.lock.json
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: package.lock.json
 
   # Conventional Commits validation (Commitizen)
   - repo: https://github.com/commitizen-tools/commitizen
@@ -44,15 +62,15 @@ repos:
       # Run the formatter
       - id: ruff-format
 
-  # Python type checking (disabled for legacy code - re-enable after refactoring)
-  # - repo: https://github.com/pre-commit/mirrors-mypy
-  #   rev: v1.15.0
-  #   hooks:
-  #     - id: mypy
-  #       additional_dependencies:
-  #         - types-PyYAML
-  #         - types-setuptools
-  #       args: [--ignore-missing-imports]
+  # Python type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - types-PyYAML
+          - types-setuptools
+        args: [--ignore-missing-imports]
 
   # Shell script checking
   - repo: https://github.com/shellcheck-py/shellcheck-py
