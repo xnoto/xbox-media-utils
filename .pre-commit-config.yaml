@@ -82,3 +82,13 @@ repos:
     rev: v1.7.7
     hooks:
       - id: actionlint
+
+  - repo: local
+    hooks:
+      - id: dry-run-process
+        name: xbox-recode dry-run process
+        entry: bash -c "XBOX_RECODE_LOCK_FILE=/tmp/xbox-recode.lock XBOX_RECODE_LOG_DIR=/tmp/xbox-recode-logs uv run xbox-recode process . --dry-run"
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
