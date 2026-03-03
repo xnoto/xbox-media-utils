@@ -2,7 +2,7 @@
 
 import signal
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .constants import LANG_CODE_MAP
 from .media import run_cmd
@@ -125,7 +125,7 @@ def extract_subtitles(info: MediaInfo, output_base: Path, logger=print) -> list[
 
     Returns list of extraction results.
     """
-    results = []
+    results: list[dict[str, Any]] = []
 
     extractable_subs = [s for s in info.subtitle_tracks if s.is_text or s.is_image]
     if not extractable_subs:
