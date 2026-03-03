@@ -123,7 +123,7 @@ def get_best_duration(path: Path) -> float:
             # Format: HH:MM:SS.mmm
             parts = dur_tag.split(".")
             t = datetime.strptime(parts[0], "%H:%M:%S")
-            seconds = t.hour * 3600 + t.minute * 60 + t.second
+            seconds: float = t.hour * 3600 + t.minute * 60 + t.second
             if len(parts) > 1:
                 # Handle fractional seconds (e.g., .607000000)
                 frac = parts[1]

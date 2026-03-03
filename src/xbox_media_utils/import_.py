@@ -13,7 +13,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
@@ -56,7 +56,7 @@ def import_file(
     use_hardware: bool = True,
 ) -> dict:
     """Import a single media file."""
-    result = {
+    result: dict[str, Any] = {
         "source": str(info.path),
         "destination": None,
         "status": "pending",

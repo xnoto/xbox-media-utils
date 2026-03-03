@@ -14,7 +14,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Optional
+from typing import IO, Any, Optional
 
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
@@ -81,7 +81,7 @@ def process_file(
     plex_group: str = PLEX_GROUP,
 ) -> dict:
     """Process a single file."""
-    result = {
+    result: dict[str, Any] = {
         "path": str(info.path),
         "status": "skipped",
         "video_action": "copy",
