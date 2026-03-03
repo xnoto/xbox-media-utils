@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from .media import run_cmd
@@ -93,6 +94,54 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
     return cmd
 
 
+def get_best_duration(path: Path) -> float:
+    """Get the most accurate duration for a media file."""
+    # Try video stream duration first (most reliable for content length)
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=duration:stream_tags=DURATION",
+        "-of",
+        "json",
+        str(path),
+    ]
+    res = run_cmd(cmd)
+    try:
+        data = json.loads(res.stdout)
+        stream = data.get("streams", [{}])[0]
+        # Try duration entry
+        dur = stream.get("duration")
+        if dur and dur != "N/A":
+            return float(dur)
+        # Try DURATION tag (common in MKV)
+        dur_tag = stream.get("tags", {}).get("DURATION")
+        if dur_tag:
+            # Format: HH:MM:SS.mmm
+            parts = dur_tag.split(".")
+            t = datetime.strptime(parts[0], "%H:%M:%S")
+            seconds = t.hour * 3600 + t.minute * 60 + t.second
+            if len(parts) > 1:
+                # Handle fractional seconds (e.g., .607000000)
+                frac = parts[1]
+                if len(frac) > 0:
+                    seconds += float("0." + frac)
+            return float(seconds)
+    except (json.JSONDecodeError, ValueError, IndexError, KeyError):
+        pass
+
+    # Fallback to format duration
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
+    res = run_cmd(cmd)
+    try:
+        return float(json.loads(res.stdout).get("format", {}).get("duration", 0))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return 0.0
+
+
 def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str]:
     """Validate output file is complete."""
     if not output_path.exists():
@@ -105,19 +154,13 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
         return False, f"Output too small: {output_size} vs {input_size}"
 
     # Duration check
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json"]
-    result_out = run_cmd(cmd + [str(output_path)])
-    result_in = run_cmd(cmd + [str(input_info.path)])
+    out_dur = get_best_duration(output_path)
+    in_dur = get_best_duration(input_info.path)
 
-    try:
-        out_dur = float(json.loads(result_out.stdout).get("format", {}).get("duration", 0))
-        in_dur = float(json.loads(result_in.stdout).get("format", {}).get("duration", 0))
-        if in_dur > 0 and out_dur > 0:
-            diff = abs(out_dur - in_dur) / in_dur
-            if diff > 0.02:
-                return False, f"Duration mismatch: {in_dur:.1f}s vs {out_dur:.1f}s"
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
+    if in_dur > 0 and out_dur > 0:
+        diff = abs(out_dur - in_dur) / in_dur
+        if diff > 0.02:
+            return False, f"Duration mismatch: {in_dur:.1f}s vs {out_dur:.1f}s"
 
     # Stream check
     result_streams = run_cmd(
