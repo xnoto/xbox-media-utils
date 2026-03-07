@@ -276,7 +276,7 @@ def main():
     success = failed = 0
 
     for idx, filepath in enumerate(files):
-        if ".HDR10." in filepath.name:
+        if filepath.name.endswith(".HDR10.mkv"):
             continue
 
         if source_is_dir:

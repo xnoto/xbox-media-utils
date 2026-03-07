@@ -243,7 +243,7 @@ def scan_directory(path: Path, quiet: bool = False) -> list[MediaInfo]:
 
     results = []
     for f in files:
-        if ".xbox." in f.name or ".HDR10." in f.name:
+        if ".xbox." in f.name or f.name.endswith(".HDR10.mkv"):
             continue
         if is_sample_file(f):
             log(f"Skipping sample file: {f.name}", quiet)
