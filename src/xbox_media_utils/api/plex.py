@@ -1,15 +1,9 @@
-"""Plex library scanner via HTTP API.
-
-Triggers partial or full library scans and resolves filesystem paths
-to the correct Plex library section automatically.
-"""
+"""Plex API client for triggering library scans."""
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
-import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
@@ -17,16 +11,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-# Environment variable configuration (following XBOX_* convention)
-DEFAULT_PLEX_URL = os.environ.get("XBOX_PLEX_URL", "http://localhost:32400")
-DEFAULT_PREFS_PATH = os.environ.get(
-    "XBOX_PLEX_PREFS_PATH",
-    "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml",
-)
+from xbox_media_utils.core.config import DEFAULT_PLEX_URL, DEFAULT_PREFS_PATH
 
 
-class PlexScanError(Exception):
-    """Raised when Plex scan operations fail."""
+class PlexError(Exception):
+    """Base exception for Plex API errors."""
+
+    pass
+
+
+class PlexAuthError(PlexError):
+    """Raised when authentication fails."""
+
+    pass
+
+
+class PlexConnectionError(PlexError):
+    """Raised when connection to Plex fails."""
 
     pass
 
@@ -44,12 +45,12 @@ class PlexScanner:
             base_url: Plex server URL (default from XBOX_PLEX_URL env var).
 
         Raises:
-            PlexScanError: If no token can be resolved.
+            PlexAuthError: If no token can be resolved.
         """
         self.base_url = base_url.rstrip("/")
         self.token = token or self._resolve_token()
         if not self.token:
-            raise PlexScanError(
+            raise PlexAuthError(
                 "No Plex token found. Set XBOX_PLEX_TOKEN or PLEX_TOKEN env var, "
                 "or ensure Preferences.xml is readable."
             )
@@ -88,7 +89,8 @@ class PlexScanner:
             Parsed JSON response or None for empty responses.
 
         Raises:
-            PlexScanError: On HTTP errors or connection failures.
+            PlexError: On HTTP errors.
+            PlexConnectionError: On connection failures.
         """
         url = f"{self.base_url}{path}"
         separator = "&" if "?" in url else "?"
@@ -101,9 +103,9 @@ class PlexScanner:
                     return None
                 return json.loads(body)
         except HTTPError as e:
-            raise PlexScanError(f"Plex API HTTP {e.code}: {path}") from e
+            raise PlexError(f"Plex API HTTP {e.code}: {path}") from e
         except URLError as e:
-            raise PlexScanError(f"Plex API unreachable: {e.reason}") from e
+            raise PlexConnectionError(f"Plex API unreachable: {e.reason}") from e
 
     def _get_sections(self) -> list[dict]:
         """Fetch and cache library sections."""
@@ -138,19 +140,22 @@ class PlexScanner:
                         best_match = section
         return best_match
 
-    def scan_path(self, target: Path) -> bool:
+    def scan_path(self, target: Path) -> dict:
         """Trigger partial scan on library section containing target.
 
         Args:
             target: Filesystem path to scan.
 
         Returns:
-            True if scan was triggered, False if no matching section.
+            Dict with 'success', 'section', and 'message' keys.
         """
         section = self._resolve_section_for_path(target)
         if not section:
-            print(f"  [plex_scan] No library section found for: {target}")
-            return False
+            return {
+                "success": False,
+                "section": None,
+                "message": f"No library section found for: {target}",
+            }
 
         key = section["key"]
         title = section["title"]
@@ -161,20 +166,26 @@ class PlexScanner:
         path = f"/library/sections/{key}/refresh?path={encoded_path}"
         try:
             self._api_get(path)
-            print(f"  [plex_scan] Triggered partial scan: {title} (section {key}) -> {target}")
-            return True
-        except PlexScanError as e:
-            print(f"  [plex_scan] Scan failed for {title}: {e}")
-            return False
+            return {
+                "success": True,
+                "section": {"key": key, "title": title},
+                "message": f"Triggered partial scan: {title} (section {key}) -> {target}",
+            }
+        except PlexError as e:
+            return {
+                "success": False,
+                "section": {"key": key, "title": title},
+                "message": str(e),
+            }
 
-    def scan_sections(self, keys: list[int]) -> dict[int, bool]:
+    def scan_sections(self, keys: list[int]) -> dict[int, dict]:
         """Trigger full scan on specified section keys.
 
         Args:
             keys: List of section keys to scan.
 
         Returns:
-            Dict mapping section key to success boolean.
+            Dict mapping section key to result dict with 'success' and 'message'.
         """
         # Validate keys exist
         valid_keys = {int(s["key"]) for s in self._get_sections()}
@@ -182,8 +193,10 @@ class PlexScanner:
 
         for key in keys:
             if key not in valid_keys:
-                print(f"  [plex_scan] Section {key} does not exist, skipping")
-                results[key] = False
+                results[key] = {
+                    "success": False,
+                    "message": f"Section {key} does not exist",
+                }
                 continue
 
             title = next(
@@ -192,89 +205,33 @@ class PlexScanner:
             )
             try:
                 self._api_get(f"/library/sections/{key}/refresh")
-                print(f"  [plex_scan] Triggered scan: {title} (section {key})")
-                results[key] = True
-            except PlexScanError as e:
-                print(f"  [plex_scan] Scan failed for {title}: {e}")
-                results[key] = False
+                results[key] = {
+                    "success": True,
+                    "message": f"Triggered scan: {title} (section {key})",
+                }
+            except PlexError as e:
+                results[key] = {
+                    "success": False,
+                    "message": str(e),
+                }
 
         return results
 
-    def list_sections(self) -> None:
-        """Print all library sections for diagnostics."""
+    def list_sections(self) -> list[dict]:
+        """Get all library sections.
+
+        Returns:
+            List of section dicts with key, type, title, and locations.
+        """
+        sections = []
         for section in self._get_sections():
-            locs = ", ".join(loc["path"] for loc in section.get("Location", []))
-            print(
-                f"  key={section['key']}  type={section['type']}  "
-                f"title={section['title']}  path={locs}"
+            locs = [loc["path"] for loc in section.get("Location", [])]
+            sections.append(
+                {
+                    "key": section["key"],
+                    "type": section["type"],
+                    "title": section["title"],
+                    "locations": locs,
+                }
             )
-
-
-def main() -> int:
-    """CLI entry point for Plex scanner.
-
-    Returns:
-        Exit code (0 for success, 1 for failure).
-    """
-    parser = argparse.ArgumentParser(
-        description="Trigger Plex library scans via HTTP API",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=f"""
-Environment Variables:
-  XBOX_PLEX_URL         Plex server URL (default: {DEFAULT_PLEX_URL})
-  XBOX_PLEX_TOKEN       Plex auth token (or PLEX_TOKEN)
-  XBOX_PLEX_PREFS_PATH  Path to Preferences.xml (default: {DEFAULT_PREFS_PATH})
-
-Examples:
-  %(prog)s /mnt/jbod/plex/movies/Some.Movie
-      Partial scan of the Movies library for that path
-
-  %(prog)s --sections 6 9 10
-      Full scan of specified section keys
-
-  %(prog)s --list
-      Show all library sections and their paths
-""",
-    )
-    parser.add_argument("path", nargs="?", type=Path, help="Filesystem path to scan (partial scan)")
-    parser.add_argument(
-        "--sections",
-        "-s",
-        nargs="+",
-        type=int,
-        help="Section key(s) to scan (full scan)",
-    )
-    parser.add_argument("--list", action="store_true", help="List library sections")
-
-    args = parser.parse_args()
-
-    if not args.path and not args.sections and not args.list:
-        parser.print_help()
-        return 1
-
-    try:
-        scanner = PlexScanner()
-    except PlexScanError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    if args.list:
-        scanner.list_sections()
-        return 0
-
-    ok = True
-
-    if args.path:
-        if not scanner.scan_path(args.path):
-            ok = False
-
-    if args.sections:
-        results = scanner.scan_sections(args.sections)
-        if not all(results.values()):
-            ok = False
-
-    return 0 if ok else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        return sections

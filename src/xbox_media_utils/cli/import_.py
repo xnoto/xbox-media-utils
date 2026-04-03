@@ -1,4 +1,4 @@
-"""Xbox Series X Media Importer.
+"""Xbox Series X Media Importer CLI.
 
 Imports new media files to Plex library with Xbox Series X compatibility.
 Unlike recode (which processes in-place), this COPIES from source to destination.
@@ -7,45 +7,34 @@ Unlike recode (which processes in-place), this COPIES from source to destination
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
+from xbox_media_utils.cli.common import (
+    add_dry_run_argument,
+    add_no_hardware_argument,
+    validate_path_exists,
+)
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
+from xbox_media_utils.core import (
+    DEFAULT_LIBRARY,
+    ENV_LIBRARY,
+    ENV_PLEX_ROOT,
+    IMPORT_LOG_DIR,
+    PLEX_GROUP,
+    PLEX_USER,
+    get_config_value,
+    get_plex_root,
+    write_log_entry,
+)
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
 from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy
 from xbox_media_utils.media import has_extractable_subs, needs_processing, probe_file
 from xbox_media_utils.subtitles import extract_subtitles
-
-# Configuration - Override with environment variables or CLI flags
-DEFAULT_PLEX_ROOT = os.environ.get("XBOX_PLEX_ROOT", "~/plex")
-DEFAULT_LIBRARY = os.environ.get("XBOX_DEFAULT_LIBRARY", "movies")
-LOG_DIR = Path(os.environ.get("XBOX_IMPORT_LOG_DIR", "/var/log/xbox-import"))
-PLEX_USER = os.environ.get("XBOX_PLEX_USER", "plex")
-PLEX_GROUP = os.environ.get("XBOX_PLEX_GROUP", "libstoragemgmt")
-
-ENV_PLEX_ROOT = "XBOX_IMPORT_PLEX_ROOT"
-ENV_LIBRARY = "XBOX_IMPORT_LIBRARY"
-
-
-def get_config_value(cli_value: Optional[str], env_name: str, default: str) -> str:
-    """Get configuration value with priority: CLI > env var > default."""
-    if cli_value is not None:
-        return cli_value
-    return os.environ.get(env_name, default)
-
-
-def write_log(entry: dict) -> None:
-    """Append log entry to daily log file."""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = LOG_DIR / f"import-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
-    with open(log_file, "a") as f:
-        f.write(json.dumps(entry) + "\n")
 
 
 def import_file(
@@ -212,6 +201,7 @@ def import_file(
 
 
 def main():
+    """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Import media with Xbox compatibility",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -223,7 +213,7 @@ def main():
         type=str,
         default=None,
         metavar="NAME",
-        help=f"Target library name (default: {DEFAULT_LIBRARY}, env: {ENV_LIBRARY})",
+        help=f"Target library name (env: {ENV_LIBRARY})",
     )
     parser.add_argument(
         "--plex",
@@ -231,20 +221,18 @@ def main():
         type=str,
         default=None,
         metavar="PATH",
-        help=f"Plex root path (default: {DEFAULT_PLEX_ROOT}, env: {ENV_PLEX_ROOT})",
+        help=f"Plex root path (env: {ENV_PLEX_ROOT})",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
-    parser.add_argument("--no-hardware", action="store_true", help="Disable VAAPI")
+    add_dry_run_argument(parser)
+    add_no_hardware_argument(parser)
 
     args = parser.parse_args()
 
-    if not args.source.exists():
-        print(f"Error: Source does not exist: {args.source}", file=sys.stderr)
-        sys.exit(1)
+    validate_path_exists(args.source)
 
     use_hardware = not args.no_hardware
 
-    plex_root = Path(get_config_value(args.plex, ENV_PLEX_ROOT, DEFAULT_PLEX_ROOT)).expanduser()
+    plex_root = get_plex_root(args.plex)
     library_name = get_config_value(args.library, ENV_LIBRARY, DEFAULT_LIBRARY)
     library_path = plex_root / library_name
 
@@ -315,7 +303,7 @@ def main():
         )
         result["timestamp"] = datetime.now().isoformat()
         if not args.dry_run:
-            write_log(result)
+            write_log_entry(result, IMPORT_LOG_DIR, prefix="import")
 
         if result["status"] == "success":
             print(f"    -> {result['action']}: {result['destination']}")
