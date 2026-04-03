@@ -3,8 +3,6 @@
 import os
 from pathlib import Path
 
-import pytest
-
 from xbox_media_utils.core import config
 from xbox_media_utils.core.config import get_config_value, get_plex_root
 

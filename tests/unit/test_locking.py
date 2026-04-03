@@ -3,7 +3,6 @@
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -25,7 +24,7 @@ class TestAcquireLock:
         """Lock file should contain the process ID."""
         lock_file = tmp_path / "test.lock"
 
-        with acquire_lock(lock_file) as fd:
+        with acquire_lock(lock_file) as _fd:
             content = lock_file.read_text()
             assert content == str(os.getpid())
 
