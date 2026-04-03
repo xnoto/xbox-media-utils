@@ -19,18 +19,30 @@ These are scripts developed for a specific home server setup (Plex on Xbox Serie
 
 ```
 src/xbox_media_utils/
-├── constants.py   # CODEC sets, language maps
-├── models.py      # Dataclasses (MediaInfo, AudioTrack, etc.)
-├── media.py       # Probing, analysis logic
-├── ffmpeg.py      # FFmpeg command building
-├── subtitles.py   # OCR and extraction
-├── hdr.py         # Dolby Vision handling
-├── files.py       # File operations
-├── recode.py      # CLI: in-place processor
-└── import_.py     # CLI: import tool
+├── api/
+│   └── plex.py         # Plex HTTP API client
+├── cli/
+│   ├── common.py       # Shared CLI utilities
+│   ├── import_.py      # CLI: import tool
+│   ├── plex_scan.py    # CLI: plex scanner
+│   └── recode.py       # CLI: in-place processor
+├── core/
+│   ├── config.py       # Configuration with env var fallbacks
+│   ├── locking.py      # File locking utilities
+│   └── logging.py      # Structured JSONL logging
+├── constants.py        # CODEC sets, language maps
+├── models.py           # Dataclasses (MediaInfo, AudioTrack, etc.)
+├── media.py            # Probing, analysis logic
+├── ffmpeg.py           # FFmpeg command building
+├── subtitles.py        # OCR and extraction
+├── hdr.py              # Dolby Vision handling
+└── files.py            # File operations
 ```
 
-**Key principle**: Shared logic in modules, CLI-specific code in `recode.py`/`import_.py`.
+**Key principle**: 
+- Shared logic in modules (`api/`, `core/`, `media.py`, etc.)
+- CLI-specific code isolated in `cli/` package
+- Entry points configured in `pyproject.toml`
 
 ### No Global State
 
@@ -86,7 +98,20 @@ sudo rm /var/run/xbox-recode.lock
 
 ## Testing Strategy
 
-Since these are personal scripts, no unit tests. Test manually:
+Unit tests exist for core modules. Run with pytest:
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run specific test file
+uv run pytest tests/unit/test_locking.py -v
+
+# Run with coverage
+uv run pytest --cov=src/xbox_media_utils
+```
+
+For manual integration testing:
 
 ```bash
 # Build and test locally

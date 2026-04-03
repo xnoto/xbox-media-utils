@@ -24,6 +24,10 @@ Update: `uv tool upgrade xbox-media-utils`
 
 ## Tools
 
+- `xbox-recode` - In-place processor for existing libraries
+- `xbox-import` - Import new media with proper structure  
+- `xbox-plex-scan` - Trigger Plex library scans via HTTP API
+
 ### xbox-recode
 
 In-place processor for existing libraries.
@@ -113,6 +117,7 @@ XBOX_PLEX_GROUP=media                    # Default: libstoragemgmt
 # Logging
 XBOX_RECODE_LOG_DIR=/var/log/recode      # Default: /var/log/xbox-recode
 XBOX_IMPORT_LOG_DIR=/var/log/import      # Default: /var/log/xbox-import
+XBOX_RECODE_LOCK_FILE=/var/run/lock      # Default: /var/run/xbox-recode.lock
 
 # Plex Scanner
 XBOX_PLEX_URL=http://localhost:32400     # Plex server URL
@@ -139,3 +144,17 @@ JSON Lines format with processing results for each file.
 ## License
 
 MIT
+
+## Development
+
+```bash
+# Install in development mode
+uv pip install -e ".[dev]"
+
+# Run tests
+uv run pytest
+
+# Run linting
+uv run ruff check .
+uv run mypy src/
+```

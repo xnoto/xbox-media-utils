@@ -1,4 +1,4 @@
-"""Xbox Series X Media Library Recoder.
+"""Xbox Series X Media Library Recoder CLI.
 
 Processes existing media files in-place for Xbox Series X / Plex compatibility.
 """
@@ -6,17 +6,27 @@ Processes existing media files in-place for Xbox Series X / Plex compatibility.
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
-import json
-import os
+import subprocess
 import sys
-from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, Optional
+from typing import Any
 
+from xbox_media_utils.cli.common import (
+    add_dry_run_argument,
+    add_no_hardware_argument,
+    add_quiet_argument,
+    validate_path_exists,
+)
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
+from xbox_media_utils.core import (
+    LOG_DIR,
+    PLEX_GROUP,
+    PLEX_USER,
+    acquire_lock,
+    write_log_entry,
+    LOCK_FILE,
+    LockAcquisitionError,
+)
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
 from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy
@@ -26,35 +36,7 @@ from xbox_media_utils.media import (
     needs_processing,
     probe_file,
 )
-from xbox_media_utils.models import MediaInfo
 from xbox_media_utils.subtitles import extract_subtitles
-
-# Configuration - TODO: Make configurable via env vars or config file
-LOG_DIR = os.environ.get("XBOX_RECODE_LOG_DIR", "/var/log/xbox-recode")
-LOCK_FILE = os.environ.get("XBOX_RECODE_LOCK_FILE", "/var/run/xbox-recode.lock")
-PLEX_USER = os.environ.get("XBOX_PLEX_USER", "plex")
-PLEX_GROUP = os.environ.get("XBOX_PLEX_GROUP", "libstoragemgmt")
-
-
-@contextmanager
-def acquire_lock(lock_file: str):
-    """Acquire exclusive lock using context manager."""
-    fd: Optional[IO] = None
-    try:
-        Path(lock_file).parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_file, "w")
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fd.write(str(os.getpid()))
-        fd.flush()
-        yield fd
-    except OSError as e:
-        raise RuntimeError(f"Failed to acquire lock: {e}") from e
-    finally:
-        if fd:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-            fd.close()
-            with contextlib.suppress(OSError):
-                Path(lock_file).unlink()
 
 
 def log(msg: str, quiet: bool = False) -> None:
@@ -63,17 +45,8 @@ def log(msg: str, quiet: bool = False) -> None:
         print(msg, flush=True)
 
 
-def write_log(log_entry: dict, log_dir: str) -> None:
-    """Append log entry to daily log file."""
-    log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
-    log_file = log_path / f"recode-{datetime.now().strftime('%Y-%m-%d')}.jsonl"
-    with open(log_file, "a") as f:
-        f.write(json.dumps(log_entry) + "\n")
-
-
 def process_file(
-    info: MediaInfo,
+    info,
     dry_run: bool = False,
     quiet: bool = False,
     use_hardware: bool = True,
@@ -81,6 +54,8 @@ def process_file(
     plex_group: str = PLEX_GROUP,
 ) -> dict:
     """Process a single file."""
+    from xbox_media_utils.models import MediaInfo
+
     result: dict[str, Any] = {
         "path": str(info.path),
         "status": "skipped",
@@ -168,7 +143,6 @@ def process_file(
             "65536",
             str(output_path),
         ]
-        import subprocess
 
         proc = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -220,7 +194,7 @@ def process_file(
             return result
 
         # Set ownership
-        success, _ = set_ownership(final_path, plex_user, plex_group)
+        set_ownership(final_path, plex_user, plex_group)
 
         # Delete backup
         backup_path.unlink()
@@ -237,7 +211,7 @@ def process_file(
     return result
 
 
-def scan_directory(path: Path, quiet: bool = False) -> list[MediaInfo]:
+def scan_directory(path: Path, quiet: bool = False) -> list:
     """Scan directory for media files."""
     files = collect_media_files(path, MEDIA_EXTENSIONS)
 
@@ -276,7 +250,7 @@ def scan_directory(path: Path, quiet: bool = False) -> list[MediaInfo]:
     return results
 
 
-def print_scan_summary(results: list[MediaInfo], quiet: bool = False) -> None:
+def print_scan_summary(results: list, quiet: bool = False) -> None:
     """Print summary of scan results."""
     total = len(results)
     errors = sum(1 for r in results if r.probe_error)
@@ -304,6 +278,7 @@ def print_scan_summary(results: list[MediaInfo], quiet: bool = False) -> None:
 
 
 def main():
+    """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Xbox Series X Media Library Recoder",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -311,22 +286,22 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # Scan command
     scan_parser = subparsers.add_parser("scan", help="Scan and report")
     scan_parser.add_argument("path", type=Path, help="Directory or file to scan")
-    scan_parser.add_argument("--quiet", action="store_true", help="Minimal output")
+    add_quiet_argument(scan_parser)
 
+    # Process command
     process_parser = subparsers.add_parser("process", help="Process files")
     process_parser.add_argument("path", type=Path, help="Directory or file to process")
     process_parser.add_argument("--file", action="store_true", help="Single file only")
-    process_parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
-    process_parser.add_argument("--quiet", action="store_true", help="Minimal output")
-    process_parser.add_argument("--no-hardware", action="store_true", help="Disable VAAPI")
+    add_dry_run_argument(process_parser)
+    add_quiet_argument(process_parser)
+    add_no_hardware_argument(process_parser)
 
     args = parser.parse_args()
 
-    if not args.path.exists():
-        print(f"Error: Path does not exist: {args.path}", file=sys.stderr)
-        sys.exit(1)
+    validate_path_exists(args.path)
 
     quiet = getattr(args, "quiet", False)
     use_hardware = not getattr(args, "no_hardware", False)
@@ -362,7 +337,7 @@ def main():
                         quiet=quiet,
                         use_hardware=use_hardware,
                     )
-                    write_log(result, LOG_DIR)
+                    write_log_entry(result, LOG_DIR, prefix="recode")
 
                     symbol = (
                         "✓"
@@ -374,7 +349,7 @@ def main():
                     log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
                     if result.get("error"):
                         log(f"      Error: {result['error']}", quiet)
-        except RuntimeError as e:
+        except LockAcquisitionError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
