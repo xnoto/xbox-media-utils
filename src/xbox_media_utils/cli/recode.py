@@ -19,13 +19,13 @@ from xbox_media_utils.cli.common import (
 )
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
 from xbox_media_utils.core import (
+    LOCK_FILE,
     LOG_DIR,
     PLEX_GROUP,
     PLEX_USER,
+    LockAcquisitionError,
     acquire_lock,
     write_log_entry,
-    LOCK_FILE,
-    LockAcquisitionError,
 )
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
@@ -54,8 +54,6 @@ def process_file(
     plex_group: str = PLEX_GROUP,
 ) -> dict:
     """Process a single file."""
-    from xbox_media_utils.models import MediaInfo
-
     result: dict[str, Any] = {
         "path": str(info.path),
         "status": "skipped",

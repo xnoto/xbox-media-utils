@@ -86,7 +86,7 @@ Examples:
 
     if args.sections:
         results = scanner.scan_sections(args.sections)
-        for key, result in results.items():
+        for _key, result in results.items():
             print(f"  [plex_scan] {result['message']}")
             if not result["success"]:
                 ok = False

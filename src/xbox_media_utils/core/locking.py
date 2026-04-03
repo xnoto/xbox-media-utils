@@ -5,9 +5,10 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Generator, Optional
+from typing import IO, Optional
 
 
 class LockAcquisitionError(RuntimeError):

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
-
-from xbox_media_utils.core import get_config_value
 
 
 def add_dry_run_argument(parser: argparse.ArgumentParser) -> None:
@@ -47,5 +46,5 @@ def validate_path_exists(path: Path, name: str = "Path") -> None:
         SystemExit: If path does not exist.
     """
     if not path.exists():
-        print(f"Error: {name} does not exist: {path}", file=__import__("sys").stderr)
+        print(f"Error: {name} does not exist: {path}", file=sys.stderr)
         raise SystemExit(1)
