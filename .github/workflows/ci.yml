@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync --all-extras
-          uv pip install pre-commit ruff
+          uv pip install pre-commit
 
       - name: Run Ruff linter
         run: uv run ruff check --output-format=github .
