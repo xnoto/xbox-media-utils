@@ -25,7 +25,7 @@ Update: `uv tool upgrade xbox-media-utils`
 ## Tools
 
 - `xbox-recode` - In-place processor for existing libraries
-- `xbox-import` - Import new media with proper structure  
+- `xbox-import` - Import new media with proper structure
 - `xbox-plex-scan` - Trigger Plex library scans via HTTP API
 
 ### xbox-recode
