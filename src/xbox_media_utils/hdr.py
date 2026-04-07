@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
-from .media import run_cmd
+from .media import ffmpeg_path, run_cmd
 from .models import MediaInfo
 
 
@@ -42,7 +42,7 @@ def create_hdr10_copy(
     logger("      Creating HDR10 copy (stripping DoVi RPU)...")
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-v",
         "error",
