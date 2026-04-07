@@ -121,8 +121,10 @@ def process_file(
     # Remux-only path (no recode needed)
     if not needs_recode and has_subs:
         log(f"  Remuxing to strip embedded subs: {info.path.name}", quiet)
+        from xbox_media_utils.media import ffmpeg_path
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-v",
             "error",
@@ -142,9 +144,7 @@ def process_file(
             str(output_path),
         ]
 
-        from xbox_media_utils.media import _clean_env
-
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
+        proc = subprocess.run(cmd, capture_output=True, text=True)
 
         if proc.returncode != 0:
             result["status"] = "failed"

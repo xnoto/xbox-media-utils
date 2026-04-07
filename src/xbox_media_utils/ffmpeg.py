@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .media import _clean_env, run_cmd
+from .media import ffmpeg_path, ffprobe_path, run_cmd
 from .models import MediaInfo
 
 # Encoding settings
@@ -21,7 +21,7 @@ DOWNMIX_FILTER = (
 
 def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
     """Build ffmpeg command for transcoding."""
-    cmd = ["ffmpeg"]
+    cmd = [ffmpeg_path()]
 
     if info.needs_video_recode and use_vaapi:
         # Use GPU for both decode and encode to reduce CPU load
@@ -98,7 +98,7 @@ def get_best_duration(path: Path) -> float:
     """Get the most accurate duration for a media file."""
     # Try video stream duration first (most reliable for content length)
     cmd = [
-        "ffprobe",
+        ffprobe_path(),
         "-v",
         "error",
         "-select_streams",
@@ -134,7 +134,7 @@ def get_best_duration(path: Path) -> float:
         pass
 
     # Fallback to format duration
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
+    cmd = [ffprobe_path(), "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
     res = run_cmd(cmd)
     try:
         return float(json.loads(res.stdout).get("format", {}).get("duration", 0))
@@ -165,7 +165,7 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
     # Stream check
     result_streams = run_cmd(
         [
-            "ffprobe",
+            ffprobe_path(),
             "-v",
             "error",
             "-show_entries",
@@ -203,7 +203,7 @@ def run_ffmpeg_with_fallback(
     if use_vaapi:
         print("  Attempting VAAPI hardware transcode...")
         cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=True)
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
+        proc = subprocess.run(cmd, capture_output=True, text=True)
 
         if proc.returncode == 0:
             return True, ""
@@ -229,7 +229,7 @@ def run_ffmpeg_with_fallback(
     # Second attempt: software decode/encode (no hwaccel)
     print("  Using software transcode...")
     cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=False)
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
+    proc = subprocess.run(cmd, capture_output=True, text=True)
 
     if proc.returncode == 0:
         return True, ""

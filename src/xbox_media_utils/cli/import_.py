@@ -124,8 +124,10 @@ def import_file(
         # Remux to strip subs
         temp_path = dest_dir / (info.path.stem + ".importing.mkv")
         print(f"    Remuxing (strip subs): {info.path.name}")
+        from xbox_media_utils.media import ffmpeg_path
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-v",
             "error",
@@ -144,9 +146,8 @@ def import_file(
             "65536",
             str(temp_path),
         ]
-        from xbox_media_utils.media import _clean_env
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
+        proc = subprocess.run(cmd, capture_output=True, text=True)
 
         if proc.returncode != 0:
             result["status"] = "failed"
