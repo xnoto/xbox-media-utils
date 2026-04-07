@@ -1,6 +1,7 @@
 """Media file probing and analysis utilities."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -13,9 +14,21 @@ from .constants import (
 from .models import AudioTrack, MediaInfo, SubtitleTrack
 
 
+def _clean_env() -> dict[str, str]:
+    """Return a copy of the environment without LD_LIBRARY_PATH.
+
+    When installed via ``uv tool install``, the virtual-environment's
+    LD_LIBRARY_PATH can leak into subprocesses and cause symbol-lookup
+    errors in system binaries like ffprobe/ffmpeg.
+    """
+    env = os.environ.copy()
+    env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
 def run_cmd(cmd: list[str], capture: bool = True) -> subprocess.CompletedProcess:
     """Run a command and return result."""
-    return subprocess.run(cmd, capture_output=capture, text=True)
+    return subprocess.run(cmd, capture_output=capture, text=True, env=_clean_env())
 
 
 def detect_dovi_profile(filepath: Path) -> Optional[int]:

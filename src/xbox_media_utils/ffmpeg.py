@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .media import run_cmd
+from .media import _clean_env, run_cmd
 from .models import MediaInfo
 
 # Encoding settings
@@ -203,7 +203,7 @@ def run_ffmpeg_with_fallback(
     if use_vaapi:
         print("  Attempting VAAPI hardware transcode...")
         cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=True)
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
 
         if proc.returncode == 0:
             return True, ""
@@ -229,7 +229,7 @@ def run_ffmpeg_with_fallback(
     # Second attempt: software decode/encode (no hwaccel)
     print("  Using software transcode...")
     cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=False)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
 
     if proc.returncode == 0:
         return True, ""

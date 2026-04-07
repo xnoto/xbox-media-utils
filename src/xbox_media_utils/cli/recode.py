@@ -142,7 +142,9 @@ def process_file(
             str(output_path),
         ]
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        from xbox_media_utils.media import _clean_env
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=_clean_env())
 
         if proc.returncode != 0:
             result["status"] = "failed"
