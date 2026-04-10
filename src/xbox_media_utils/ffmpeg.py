@@ -138,7 +138,16 @@ def get_best_duration(path: Path) -> float:
         pass
 
     # Fallback to format duration
-    cmd = [ffprobe_path(), "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
+    cmd = [
+        ffprobe_path(),
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        str(path),
+    ]
     res = run_cmd(cmd)
     try:
         return float(json.loads(res.stdout).get("format", {}).get("duration", 0))
