@@ -121,8 +121,10 @@ def process_file(
     # Remux-only path (no recode needed)
     if not needs_recode and has_subs:
         log(f"  Remuxing to strip embedded subs: {info.path.name}", quiet)
+        from xbox_media_utils.media import ffmpeg_path
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-v",
             "error",

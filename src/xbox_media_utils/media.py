@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,28 @@ from .constants import (
     TEXT_SUBTITLE_CODECS,
 )
 from .models import AudioTrack, MediaInfo, SubtitleTrack
+
+
+@lru_cache(maxsize=1)
+def _static_binaries() -> tuple[str, str]:
+    """Return (ffmpeg, ffprobe) paths from the static-ffmpeg package.
+
+    Downloads binaries on first call; cached thereafter.
+    """
+    from static_ffmpeg import run
+
+    ffmpeg, ffprobe = run.get_or_fetch_platform_executables_else_raise()
+    return ffmpeg, ffprobe
+
+
+def ffmpeg_path() -> str:
+    """Return the path to a statically-linked ffmpeg binary."""
+    return _static_binaries()[0]
+
+
+def ffprobe_path() -> str:
+    """Return the path to a statically-linked ffprobe binary."""
+    return _static_binaries()[1]
 
 
 def run_cmd(cmd: list[str], capture: bool = True) -> subprocess.CompletedProcess:
@@ -25,7 +48,7 @@ def detect_dovi_profile(filepath: Path) -> Optional[int]:
     Returns the profile number (e.g., 5, 7, 8) or None if not DoVi.
     """
     cmd = [
-        "ffprobe",
+        ffprobe_path(),
         "-v",
         "quiet",
         "-select_streams",
@@ -73,7 +96,7 @@ def probe_file(filepath: Path) -> MediaInfo:
     info = MediaInfo(path=filepath)
 
     cmd = [
-        "ffprobe",
+        ffprobe_path(),
         "-v",
         "quiet",
         "-print_format",

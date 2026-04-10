@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -124,8 +125,10 @@ def import_file(
         # Remux to strip subs
         temp_path = dest_dir / (info.path.stem + ".importing.mkv")
         print(f"    Remuxing (strip subs): {info.path.name}")
+        from xbox_media_utils.media import ffmpeg_path
+
         cmd = [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-v",
             "error",
@@ -144,7 +147,6 @@ def import_file(
             "65536",
             str(temp_path),
         ]
-        import subprocess
 
         proc = subprocess.run(cmd, capture_output=True, text=True)
 

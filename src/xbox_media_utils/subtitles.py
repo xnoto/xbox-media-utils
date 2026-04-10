@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .constants import LANG_CODE_MAP
-from .media import run_cmd
+from .media import ffmpeg_path, run_cmd
 from .models import MediaInfo
 
 
@@ -174,7 +174,7 @@ def extract_subtitles(info: MediaInfo, output_base: Path, logger=print) -> list[
         output_path = output_base.parent / ((".".join(parts)) + ext)
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-v",
             "error",

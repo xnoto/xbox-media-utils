@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from .media import run_cmd
+from .media import ffmpeg_path, ffprobe_path, run_cmd
 from .models import MediaInfo
 
 # Encoding settings
@@ -22,7 +22,7 @@ MONO_TO_STEREO_FILTER = "pan=stereo|c0=c0|c1=c0"
 
 def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
     """Build ffmpeg command for transcoding."""
-    cmd = ["ffmpeg"]
+    cmd = [ffmpeg_path()]
 
     if info.needs_video_recode and use_vaapi:
         # Use GPU for both decode and encode to reduce CPU load
@@ -102,7 +102,7 @@ def get_best_duration(path: Path) -> float:
     """Get the most accurate duration for a media file."""
     # Try video stream duration first (most reliable for content length)
     cmd = [
-        "ffprobe",
+        ffprobe_path(),
         "-v",
         "error",
         "-select_streams",
@@ -138,7 +138,16 @@ def get_best_duration(path: Path) -> float:
         pass
 
     # Fallback to format duration
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
+    cmd = [
+        ffprobe_path(),
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        str(path),
+    ]
     res = run_cmd(cmd)
     try:
         return float(json.loads(res.stdout).get("format", {}).get("duration", 0))
@@ -169,7 +178,7 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
     # Stream check
     result_streams = run_cmd(
         [
-            "ffprobe",
+            ffprobe_path(),
             "-v",
             "error",
             "-show_entries",

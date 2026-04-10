@@ -39,7 +39,7 @@ src/xbox_media_utils/
 └── files.py            # File operations
 ```
 
-**Key principle**: 
+**Key principle**:
 - Shared logic in modules (`api/`, `core/`, `media.py`, etc.)
 - CLI-specific code isolated in `cli/` package
 - Entry points configured in `pyproject.toml`
