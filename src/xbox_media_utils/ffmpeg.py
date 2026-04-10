@@ -17,6 +17,7 @@ HEVC_PRESET = "slow"
 DOWNMIX_FILTER = (
     "pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE"
 )
+MONO_TO_STEREO_FILTER = "pan=stereo|c0=c0|c1=c0"
 
 
 def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
@@ -80,7 +81,10 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
     for i, track in enumerate(info.audio_tracks):
         if track.needs_recode:
             cmd.extend([f"-c:a:{i}", "aac", f"-ac:a:{i}", "2", f"-b:a:{i}", "256k"])
-            cmd.extend([f"-filter:a:{i}", DOWNMIX_FILTER])
+            if track.channels > 2:
+                cmd.extend([f"-filter:a:{i}", DOWNMIX_FILTER])
+            elif track.channels == 1:
+                cmd.extend([f"-filter:a:{i}", MONO_TO_STEREO_FILTER])
         else:
             cmd.extend([f"-c:a:{i}", "copy"])
 
@@ -134,7 +138,16 @@ def get_best_duration(path: Path) -> float:
         pass
 
     # Fallback to format duration
-    cmd = [ffprobe_path(), "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)]
+    cmd = [
+        ffprobe_path(),
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "json",
+        str(path),
+    ]
     res = run_cmd(cmd)
     try:
         return float(json.loads(res.stdout).get("format", {}).get("duration", 0))

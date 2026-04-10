@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from .constants import (
+    AUDIO_CODECS_REQUIRING_RECODE,
     COMPATIBLE_VIDEO_CODECS,
     IMAGE_SUBTITLE_CODECS,
     TEXT_SUBTITLE_CODECS,
@@ -160,12 +161,15 @@ def probe_file(filepath: Path) -> MediaInfo:
     for stream in streams:
         if stream.get("codec_type") == "audio":
             tags = stream.get("tags", {})
+            disposition = stream.get("disposition", {})
             info.audio_tracks.append(
                 AudioTrack(
                     index=stream.get("index", 0),
                     codec=stream.get("codec_name", "").lower(),
                     channels=stream.get("channels", 0),
                     language=tags.get("language", "und"),
+                    title=tags.get("title"),
+                    is_default=disposition.get("default", 0) == 1,
                 )
             )
 
@@ -208,13 +212,21 @@ def analyze_recode_needs(info: MediaInfo) -> None:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"
 
+    audio_track_count = len(info.audio_tracks)
+
     for track in info.audio_tracks:
-        if track.channels > 2:
+        if track.codec in AUDIO_CODECS_REQUIRING_RECODE:
+            track.needs_recode = True
+            track.recode_reason = f"incompatible codec: {track.codec} -> AAC stereo"
+        elif track.channels > 2:
             ch_label = (
                 f"{track.channels - 1}.1" if track.channels in (6, 8) else f"{track.channels}ch"
             )
             track.needs_recode = True
             track.recode_reason = f"{track.codec} {ch_label} -> AAC stereo"
+        elif track.channels == 1 and (track.is_default or audio_track_count == 1):
+            track.needs_recode = True
+            track.recode_reason = "mono primary track -> AAC stereo"
 
 
 def needs_processing(info: MediaInfo) -> bool:

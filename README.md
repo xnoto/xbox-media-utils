@@ -8,7 +8,7 @@ Handles transcoding, audio downmixing, subtitle extraction, and Dolby Vision com
 Xbox Series X has specific limitations that force transcoding:
 
 - Video: Only H.264, HEVC, VP9 supported natively
-- Audio: No DTS/TrueHD decode; >2ch requires passthrough
+- Audio: Opus/DTS/TrueHD are unreliable; mono-only primary tracks and >2ch audio should be normalized to AAC stereo
 - Subtitles: 4K + embedded subs = forced transcode
 - Dolby Vision Profile 8: Crashes Plex app
 
@@ -39,6 +39,10 @@ xbox-recode scan /path/to/library
 # Process everything
 xbox-recode process /path/to/library
 
+# Resync an entire library after compatibility rules change
+xbox-recode process /mnt/media/plex/movies
+xbox-recode process /mnt/media/plex/tv
+
 # Single file
 xbox-recode process /path/to/file.mkv --file
 
@@ -53,7 +57,7 @@ xbox-recode process /path/to/library --no-hardware
 
 - Video: Pass-through H.264/HEVC; transcode others to HEVC via VAAPI
   (with MPEG-4 fallback)
-- Audio: Copy stereo; downmix >2ch to AAC 256k stereo
+- Audio: Copy already-compatible stereo; recode Opus/DTS/TrueHD and mono primary tracks to AAC 256k stereo; downmix >2ch to AAC 256k stereo
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
 - DoVi P8: Create `.HDR10.mkv` sidecar with RPU stripped
 - Replaces originals after validation
