@@ -25,13 +25,13 @@ class OcrAlarmHandler:
         signal.alarm(self.timeout)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         signal.alarm(0)
         signal.signal(signal.SIGALRM, self.old_handler)
         return False
 
     @staticmethod
-    def _alarm_handler(signum, frame):
+    def _alarm_handler(_signum, _frame):
         raise OcrTimeoutError("OCR timed out")
 
 
