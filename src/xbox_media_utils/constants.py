@@ -4,6 +4,24 @@
 # Reference: https://support.plex.tv/articles/203824396-what-media-formats-are-supported/
 COMPATIBLE_VIDEO_CODECS = {"h264", "hevc", "vp9"}
 
+# Audio codecs we normalize to AAC stereo for reliable Xbox/Plex playback.
+#
+# These are the concrete problem cases seen in the library so far:
+# - Opus: often arrives from yt-dlp/webm downloads and forces playback failures
+# - DTS / DCA: Plex for Xbox may only allow it with passthrough/direct-play paths
+# - TrueHD / MLP / Vorbis: not worth preserving for Xbox-first libraries
+AUDIO_CODECS_REQUIRING_RECODE = {
+    "opus",
+    "vorbis",
+    "dca",
+    "dts",
+    "truehd",
+    "mlp",
+    "dtshd",
+    "dtshd_ma",
+    "dtshd_hra",
+}
+
 # Codecs that VAAPI hardware decoding cannot handle (will fallback to software)
 # Radeon VII VAAPI driver doesn't support MPEG-4 (XviD/DivX) decoding
 VAAPI_INCOMPATIBLE_CODECS = {"mpeg4", "msmpeg4v1", "msmpeg4v2", "msmpeg4v3"}

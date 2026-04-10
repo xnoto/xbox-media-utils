@@ -13,6 +13,8 @@ class AudioTrack:
     codec: str
     channels: int = 0
     language: Optional[str] = None
+    title: Optional[str] = None
+    is_default: bool = False
     needs_recode: bool = False
     recode_reason: Optional[str] = None
 
