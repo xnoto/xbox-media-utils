@@ -42,8 +42,6 @@ class MediaInfo:
     video_bit_depth: Optional[int] = None
     video_hdr: bool = False
     video_hdr_type: Optional[str] = None
-    video_width: Optional[int] = None
-    video_height: Optional[int] = None
     audio_tracks: list = field(default_factory=list)
     needs_video_recode: bool = False
     video_recode_reason: Optional[str] = None

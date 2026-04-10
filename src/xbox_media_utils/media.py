@@ -123,8 +123,6 @@ def probe_file(filepath: Path) -> MediaInfo:
     for stream in streams:
         if stream.get("codec_type") == "video":
             info.video_codec = stream.get("codec_name", "").lower()
-            info.video_width = stream.get("width")
-            info.video_height = stream.get("height")
 
             # Bit depth detection
             pix_fmt = stream.get("pix_fmt", "")
