@@ -55,3 +55,32 @@ def test_analyze_recode_needs_marks_av1_video_for_video_recode():
 
     assert info.needs_video_recode is True
     assert info.video_recode_reason == "incompatible codec: av1"
+
+
+def test_analyze_recode_needs_marks_dolby_vision_profile_5_for_video_recode():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=5,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is True
+    assert info.video_recode_reason == "Dolby Vision Profile 5 is incompatible with Plex on Xbox"
+
+
+def test_analyze_recode_needs_marks_unknown_dolby_vision_for_video_recode():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is True
+    assert info.video_recode_reason == "Dolby Vision is incompatible with Plex on Xbox"
