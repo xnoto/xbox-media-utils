@@ -101,6 +101,9 @@ def process_file(
         result["status"] = "would_process"
         return result
 
+    def set_output_ownership(path_str: str) -> None:
+        set_ownership(Path(path_str), plex_user, plex_group)
+
     final_path = info.path.with_suffix(".mkv")
     output_path = info.path.with_suffix(".xbox.mkv")
 
@@ -110,6 +113,9 @@ def process_file(
         result["subtitles_extracted"] = extract_subtitles(
             info, final_path, logger=lambda m: log(m, quiet)
         )
+        for extracted in result["subtitles_extracted"]:
+            if extracted.get("success") and extracted.get("output"):
+                set_output_ownership(extracted["output"])
 
     # Create HDR10 copy for DoVi Profile 8 content
     if needs_hdr10:
@@ -124,6 +130,8 @@ def process_file(
         }
         if not hdr10_success:
             log(f"    WARNING: HDR10 copy creation failed: {hdr10_msg}", quiet)
+        elif hdr10_path:
+            set_ownership(hdr10_path, plex_user, plex_group)
 
         if can_promote_hdr10 and hdr10_success and hdr10_path:
             log(f"  Promoting HDR10 copy to primary filename: {info.path.name}", quiet)
