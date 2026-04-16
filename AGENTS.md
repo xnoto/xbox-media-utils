@@ -120,8 +120,8 @@ uv run xbox-recode scan /path/to/test/media --dry-run
 
 # Test specific scenarios
 # 1. MPEG-4 file (triggers VAAPI fallback)
-# 2. DoVi Profile 8 file (creates HDR10 copy)
-# 3. Multi-track audio (5.1 DTS -> AAC stereo)
+# 2. Dolby Vision file (forces video recode; Profile 8 also creates HDR10 copy)
+# 3. Multi-track audio (5.1/7.1/mono -> AAC stereo)
 # 4. PGS subtitles (OCR to SRT)
 ```
 

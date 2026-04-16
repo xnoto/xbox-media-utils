@@ -29,10 +29,10 @@ def test_analyze_recode_needs_marks_default_mono_track_for_audio_recode():
     analyze_recode_needs(info)
 
     assert info.needs_audio_recode is True
-    assert info.audio_tracks[0].recode_reason == "mono primary track -> AAC stereo"
+    assert info.audio_tracks[0].recode_reason == "mono track -> AAC stereo"
 
 
-def test_analyze_recode_needs_skips_non_default_mono_commentary_when_main_track_exists():
+def test_analyze_recode_needs_marks_non_default_mono_commentary_for_audio_recode():
     info = MediaInfo(
         path=Path("movie.mkv"),
         video_codec="h264",
@@ -44,8 +44,9 @@ def test_analyze_recode_needs_skips_non_default_mono_commentary_when_main_track_
 
     analyze_recode_needs(info)
 
-    assert info.needs_audio_recode is False
-    assert info.audio_tracks[1].needs_recode is False
+    assert info.needs_audio_recode is True
+    assert info.audio_tracks[1].needs_recode is True
+    assert info.audio_tracks[1].recode_reason == "mono track -> AAC stereo"
 
 
 def test_analyze_recode_needs_marks_av1_video_for_video_recode():

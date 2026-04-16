@@ -29,7 +29,7 @@ from xbox_media_utils.core import (
 )
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
-from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy
+from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy, promote_hdr10_copy
 from xbox_media_utils.media import (
     has_extractable_subs,
     is_sample_file,
@@ -69,6 +69,7 @@ def process_file(
     needs_recode = needs_processing(info)
     has_subs = has_extractable_subs(info)
     needs_hdr10 = needs_hdr10_copy(info)
+    can_promote_hdr10 = info.has_dovi_profile_8 and not info.needs_audio_recode and not has_subs
 
     if not needs_recode and not has_subs and not needs_hdr10:
         result["status"] = "compatible"
@@ -88,7 +89,13 @@ def process_file(
             sub_parts.append(f"{image_count} image")
         result["subtitle_action"] = f"extract {', '.join(sub_parts)} subtitle(s), remux to strip"
     if needs_hdr10:
-        result["dovi_action"] = f"create HDR10 copy (DoVi Profile {info.dovi_profile})"
+        if can_promote_hdr10:
+            result["dovi_action"] = (
+                f"promote HDR10 copy to primary and archive original as .DV.mkv "
+                f"(DoVi Profile {info.dovi_profile})"
+            )
+        else:
+            result["dovi_action"] = f"create HDR10 copy (DoVi Profile {info.dovi_profile})"
 
     if dry_run:
         result["status"] = "would_process"
@@ -117,6 +124,23 @@ def process_file(
         }
         if not hdr10_success:
             log(f"    WARNING: HDR10 copy creation failed: {hdr10_msg}", quiet)
+
+        if can_promote_hdr10 and hdr10_success and hdr10_path:
+            log(f"  Promoting HDR10 copy to primary filename: {info.path.name}", quiet)
+            promote_success, promote_msg, dv_path = promote_hdr10_copy(info, hdr10_path)
+            if not promote_success:
+                result["status"] = "failed"
+                result["error"] = promote_msg
+                return result
+
+            set_ownership(info.path, plex_user, plex_group)
+            if dv_path:
+                set_ownership(dv_path, plex_user, plex_group)
+
+            result["status"] = "success"
+            result["output_path"] = str(info.path)
+            result["archived_dovi_path"] = str(dv_path) if dv_path else None
+            return result
 
     # Remux-only path (no recode needed)
     if not needs_recode and has_subs:
@@ -217,7 +241,7 @@ def scan_directory(path: Path, quiet: bool = False) -> list:
 
     results = []
     for f in files:
-        if ".xbox." in f.name or f.name.endswith(".HDR10.mkv"):
+        if ".xbox." in f.name or f.name.endswith(".HDR10.mkv") or f.name.endswith(".DV.mkv"):
             continue
         if is_sample_file(f):
             log(f"Skipping sample file: {f.name}", quiet)

@@ -218,8 +218,6 @@ def analyze_recode_needs(info: MediaInfo) -> None:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"
 
-    audio_track_count = len(info.audio_tracks)
-
     for track in info.audio_tracks:
         if track.codec in AUDIO_CODECS_REQUIRING_RECODE:
             track.needs_recode = True
@@ -230,9 +228,9 @@ def analyze_recode_needs(info: MediaInfo) -> None:
             )
             track.needs_recode = True
             track.recode_reason = f"{track.codec} {ch_label} -> AAC stereo"
-        elif track.channels == 1 and (track.is_default or audio_track_count == 1):
+        elif track.channels == 1:
             track.needs_recode = True
-            track.recode_reason = "mono primary track -> AAC stereo"
+            track.recode_reason = "mono track -> AAC stereo"
 
 
 def needs_processing(info: MediaInfo) -> bool:
