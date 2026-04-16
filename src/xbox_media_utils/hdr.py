@@ -95,3 +95,29 @@ def create_hdr10_copy(
 
     logger(f"      Created: {output_path.name}")
     return True, "HDR10 copy created", output_path
+
+
+def promote_hdr10_copy(info: MediaInfo, hdr10_path: Path) -> tuple[bool, str, Optional[Path]]:
+    """Promote an HDR10 sidecar to the primary filename and archive original as .DV.mkv."""
+    if not hdr10_path.exists():
+        return False, "HDR10 copy does not exist", None
+
+    primary_path = info.path
+    dv_path = primary_path.with_suffix(".DV.mkv")
+
+    if not primary_path.exists():
+        return False, "Primary file does not exist", None
+    if dv_path.exists():
+        return False, f"Archive path already exists: {dv_path.name}", None
+
+    try:
+        primary_path.rename(dv_path)
+        try:
+            hdr10_path.rename(primary_path)
+        except Exception as e:
+            dv_path.rename(primary_path)
+            return False, f"Rename failed: {e}", None
+    except Exception as e:
+        return False, f"Archive rename failed: {e}", None
+
+    return True, "HDR10 copy promoted to primary", dv_path

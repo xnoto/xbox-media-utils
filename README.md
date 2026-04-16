@@ -1,16 +1,16 @@
 # xbox-media-utils
 
 CLI tools to make media playable via **Direct Play** on Xbox Series X through Plex.
-Handles transcoding, audio downmixing, subtitle extraction, and Dolby Vision compatibility.
+Handles transcoding, audio normalization, subtitle extraction, and Dolby Vision compatibility.
 
 ## Why
 
 Xbox Series X has specific limitations that force transcoding:
 
 - Video: Only H.264, HEVC, VP9 supported natively
-- Audio: Opus/DTS/TrueHD are unreliable; mono-only primary tracks and >2ch audio should be normalized to AAC stereo
+- Audio: normalize anything that is not already AAC stereo to AAC stereo; this includes Opus/DTS/TrueHD, mono tracks, and >2ch audio
 - Subtitles: 4K + embedded subs = forced transcode
-- Dolby Vision Profile 8: Crashes Plex app
+- Dolby Vision: direct play / transcode support is unreliable on Plex for Xbox
 
 These tools pre-process media to avoid server-side transcoding.
 
@@ -55,11 +55,11 @@ xbox-recode process /path/to/library --no-hardware
 
 **What it does:**
 
-- Video: Pass-through H.264/HEVC; transcode others to HEVC via VAAPI
+- Video: Pass-through H.264/HEVC unless Dolby Vision is present; transcode others to HEVC via VAAPI
   (with MPEG-4 fallback)
-- Audio: Copy already-compatible stereo; recode Opus/DTS/TrueHD and mono primary tracks to AAC 256k stereo; downmix >2ch to AAC 256k stereo
+- Audio: Copy already-compatible AAC stereo; recode non-AAC stereo, all mono tracks, and all >2ch tracks to AAC 256k stereo
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
-- DoVi P8: Create `.HDR10.mkv` sidecar with RPU stripped
+- Dolby Vision: Force video recode for all DoVi content; during recode, DoVi Profile 8 files with no other work needed can promote an `.HDR10.mkv` copy to the main `.mkv` name and archive the original as `.DV.mkv`
 - Replaces originals after validation
 
 ### xbox-import

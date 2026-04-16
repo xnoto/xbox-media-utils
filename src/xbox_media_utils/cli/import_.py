@@ -79,6 +79,9 @@ def import_file(
             result["dovi_action"] = f"create HDR10 copy (DoVi Profile {info.dovi_profile})"
         return result
 
+    def set_output_ownership(path_str: str) -> None:
+        set_ownership(Path(path_str), PLEX_USER, PLEX_GROUP)
+
     # Create destination directory
     dest_dir.mkdir(parents=True, exist_ok=True)
     current = dest_dir
@@ -90,6 +93,9 @@ def import_file(
     if has_subs:
         print("    Extracting subtitles...")
         result["subtitles_extracted"] = extract_subtitles(info, dest_path)
+        for extracted in result["subtitles_extracted"]:
+            if extracted.get("success") and extracted.get("output"):
+                set_output_ownership(extracted["output"])
 
     # Handle main file
     if needs_processing(info):
@@ -197,6 +203,8 @@ def import_file(
         }
         if not hdr10_success:
             print(f"      WARNING: HDR10 copy creation failed: {hdr10_msg}")
+        elif hdr10_path_result:
+            set_output_ownership(str(hdr10_path_result))
 
     result["status"] = "success"
     return result

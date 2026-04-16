@@ -103,6 +103,9 @@ ignore_missing_imports = true
 follow_imports = "skip"
 disallow_untyped_defs = false
 
+[tool.vulture]
+ignore_names = ["is_default"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
