@@ -262,6 +262,8 @@ def can_use_vaapi(info: MediaInfo, use_hardware: bool = True) -> bool:
 
     if not use_hardware or not info.needs_video_recode:
         return False
+    if info.video_hdr_type == "dolby vision":
+        return False
     # VAAPI cannot encode 10-bit (Radeon VII only supports HEVC Main/8-bit)
     if info.video_bit_depth and info.video_bit_depth > 8:
         return False
