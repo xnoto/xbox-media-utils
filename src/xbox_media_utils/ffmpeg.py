@@ -18,13 +18,20 @@ DOWNMIX_FILTER = (
     "pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE"
 )
 MONO_TO_STEREO_FILTER = "pan=stereo|c0=c0|c1=c0"
+DV_TO_SDR_FILTER = (
+    "zscale=transfer=linear:npl=100,"
+    "tonemap=hable,"
+    "zscale=transfer=bt709:primaries=bt709:matrix=bt709,"
+    "format=yuv420p"
+)
 
 
 def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
     """Build ffmpeg command for transcoding."""
     cmd = [ffmpeg_path()]
+    is_dolby_vision = info.video_hdr_type == "dolby vision"
 
-    if info.needs_video_recode and use_vaapi:
+    if info.needs_video_recode and use_vaapi and not is_dolby_vision:
         # Use GPU for both decode and encode to reduce CPU load
         cmd.extend(
             [
@@ -44,7 +51,32 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
 
     # Video handling
     if info.needs_video_recode:
-        if use_vaapi:
+        if is_dolby_vision:
+            cmd.extend(
+                [
+                    "-vf",
+                    DV_TO_SDR_FILTER,
+                    "-c:v",
+                    "libx265",
+                    "-crf",
+                    str(CRF_QUALITY),
+                    "-preset",
+                    HEVC_PRESET,
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-color_primaries",
+                    "bt709",
+                    "-color_trc",
+                    "bt709",
+                    "-colorspace",
+                    "bt709",
+                    "-tag:v",
+                    "hvc1",
+                    "-x265-params",
+                    "repeat-headers=1",
+                ]
+            )
+        elif use_vaapi:
             cmd.extend(
                 [
                     "-c:v",
@@ -210,7 +242,10 @@ def run_ffmpeg_with_fallback(
     """
     from .media import can_use_vaapi
 
-    # First attempt: use VAAPI if eligible
+    # First attempt: use VAAPI if eligible.
+    # Dolby Vision sources are forced through software with explicit tonemapping
+    # because generic HEVC transcodes can preserve broken HDR signaling that Plex
+    # on Xbox renders with a magenta cast.
     use_vaapi = can_use_vaapi(info, use_hardware)
 
     if use_vaapi:
