@@ -85,3 +85,43 @@ def test_analyze_recode_needs_marks_unknown_dolby_vision_for_video_recode():
 
     assert info.needs_video_recode is True
     assert info.video_recode_reason == "Dolby Vision is incompatible with Plex on Xbox"
+
+
+def test_analyze_recode_needs_marks_10bit_sdr_hevc_for_video_recode():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_bit_depth=10,
+        video_hdr=False,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is True
+    assert info.video_recode_reason == "10-bit SDR hevc crashes Plex on Xbox"
+
+
+def test_analyze_recode_needs_leaves_10bit_hdr_hevc_alone():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_bit_depth=10,
+        video_hdr=True,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is False
+
+
+def test_analyze_recode_needs_leaves_8bit_sdr_hevc_alone():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_bit_depth=8,
+        video_hdr=False,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is False

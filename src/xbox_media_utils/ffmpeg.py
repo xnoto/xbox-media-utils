@@ -101,9 +101,12 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
                     "hvc1",
                 ]
             )
-            if info.video_bit_depth and info.video_bit_depth >= 10:
+            if info.video_bit_depth and info.video_bit_depth >= 10 and info.video_hdr:
                 cmd.extend(["-pix_fmt", "yuv420p10le"])
                 x265_params.append("profile=main10")
+            elif info.video_bit_depth and info.video_bit_depth >= 10:
+                # 10-bit SDR input is what we're recoding away from; force 8-bit Main.
+                cmd.extend(["-pix_fmt", "yuv420p"])
             if x265_params:
                 cmd.extend(["-x265-params", ":".join(x265_params)])
     else:

@@ -217,6 +217,15 @@ def analyze_recode_needs(info: MediaInfo) -> None:
     elif info.video_codec and info.video_codec not in COMPATIBLE_VIDEO_CODECS:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"
+    elif info.video_bit_depth and info.video_bit_depth >= 10 and not info.video_hdr:
+        # 10-bit SDR HEVC (BT.709) crashes the Plex Xbox client on direct-play.
+        # The Xbox HEVC HW decoder handles 10-bit fine for HDR content (BT.2020/PQ),
+        # but the Plex client app's renderer faults on the 10-bit-without-HDR combo
+        # produced by some 4K SDR releases (e.g. AOC-style hybrids).
+        info.needs_video_recode = True
+        info.video_recode_reason = (
+            f"{info.video_bit_depth}-bit SDR {info.video_codec} crashes Plex on Xbox"
+        )
 
     for track in info.audio_tracks:
         if track.codec in AUDIO_CODECS_REQUIRING_RECODE:

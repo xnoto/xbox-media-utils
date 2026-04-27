@@ -75,6 +75,40 @@ def test_build_ffmpeg_cmd_tonemaps_dolby_vision_to_sdr_bt709():
     assert cmd[cmd.index("-colorspace") + 1] == "bt709"
 
 
+def test_build_ffmpeg_cmd_recodes_10bit_sdr_hevc_to_8bit_main():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_bit_depth=10,
+        video_hdr=False,
+        needs_video_recode=True,
+    )
+
+    cmd = build_ffmpeg_cmd(info, Path("movie.xbox.mkv"), use_vaapi=False)
+
+    assert "libx265" in cmd
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+    # Must not opt into Main 10 for SDR.
+    if "-x265-params" in cmd:
+        assert "profile=main10" not in cmd[cmd.index("-x265-params") + 1]
+
+
+def test_build_ffmpeg_cmd_keeps_10bit_for_hdr_hevc_recode():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_bit_depth=10,
+        video_hdr=True,
+        needs_video_recode=True,
+    )
+
+    cmd = build_ffmpeg_cmd(info, Path("movie.xbox.mkv"), use_vaapi=False)
+
+    assert "libx265" in cmd
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p10le"
+    assert "profile=main10" in cmd[cmd.index("-x265-params") + 1]
+
+
 def test_can_use_vaapi_returns_false_for_dolby_vision_recode():
     info = MediaInfo(
         path=Path("movie.mkv"),
