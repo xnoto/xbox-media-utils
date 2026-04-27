@@ -49,6 +49,7 @@ class MediaInfo:
     subtitle_tracks: list = field(default_factory=list)
     dovi_profile: Optional[int] = None
     has_dovi_profile_8: bool = False
+    incompatible_reason: Optional[str] = None
 
     @property
     def needs_audio_recode(self) -> bool:

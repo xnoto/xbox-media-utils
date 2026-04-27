@@ -71,6 +71,12 @@ def process_file(
     needs_hdr10 = needs_hdr10_copy(info)
     can_promote_hdr10 = info.has_dovi_profile_8 and not info.needs_audio_recode and not has_subs
 
+    if info.incompatible_reason:
+        result["status"] = "incompatible"
+        result["video_action"] = "skip"
+        result["error"] = info.incompatible_reason
+        return result
+
     if not needs_recode and not has_subs and not needs_hdr10:
         result["status"] = "compatible"
         return result
@@ -290,6 +296,7 @@ def print_scan_summary(results: list, quiet: bool = False) -> None:
     needs_audio = sum(1 for r in results if r.needs_audio_recode)
     has_subs = sum(1 for r in results if has_extractable_subs(r))
     has_dovi_p8 = sum(1 for r in results if r.has_dovi_profile_8)
+    incompatible = sum(1 for r in results if r.incompatible_reason)
     needs_any = sum(
         1 for r in results if needs_processing(r) or has_extractable_subs(r) or needs_hdr10_copy(r)
     )
@@ -305,8 +312,32 @@ def print_scan_summary(results: list, quiet: bool = False) -> None:
     log(f"  - Audio recode:      {needs_audio}", quiet)
     log(f"  - Subtitle extract:  {has_subs}", quiet)
     log(f"  - DoVi P8 HDR10:     {has_dovi_p8}", quiet)
+    log(f"Incompatible (block):  {incompatible}", quiet)
     log(f"Probe errors:          {errors}", quiet)
     log("=" * 60, quiet)
+
+
+def write_incompatible_report(results: list, output: Path) -> int:
+    """Write tab-separated report of files the current pipeline cannot process.
+
+    Returns the count of incompatible files written.
+    """
+    lines = []
+    for r in results:
+        if not r.incompatible_reason:
+            continue
+        details = []
+        if r.dovi_profile is not None:
+            details.append(f"DV Profile {r.dovi_profile}")
+        if r.video_codec:
+            details.append(r.video_codec)
+        if r.video_bit_depth:
+            details.append(f"{r.video_bit_depth}-bit")
+        detail_str = ", ".join(details) if details else "?"
+        lines.append(f"{r.path}\t{detail_str}\t{r.incompatible_reason}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return len(lines)
 
 
 def main():
@@ -331,6 +362,22 @@ def main():
     add_quiet_argument(process_parser)
     add_no_hardware_argument(process_parser)
 
+    # Incompat command — list files the current pipeline refuses to process.
+    incompat_parser = subparsers.add_parser(
+        "incompat",
+        help="List files that the current pipeline cannot make Xbox-compatible",
+    )
+    incompat_parser.add_argument("path", type=Path, help="Directory to scan")
+    incompat_parser.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        required=True,
+        metavar="FILE",
+        help="Path to write the tab-separated incompatibility report",
+    )
+    add_quiet_argument(incompat_parser)
+
     args = parser.parse_args()
 
     validate_path_exists(args.path)
@@ -341,6 +388,11 @@ def main():
     if args.command == "scan":
         results = scan_directory(args.path, quiet)
         print_scan_summary(results, quiet)
+
+    elif args.command == "incompat":
+        results = scan_directory(args.path, quiet)
+        count = write_incompatible_report(results, args.output)
+        log(f"\nWrote {count} incompatible file(s) to {args.output}", quiet)
 
     elif args.command == "process":
         try:
@@ -371,16 +423,39 @@ def main():
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
 
-                    symbol = (
-                        "✓"
-                        if result["status"] == "success"
-                        else "✗"
-                        if result["status"] == "failed"
-                        else "○"
-                    )
-                    log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
-                    if result.get("error"):
-                        log(f"      Error: {result['error']}", quiet)
+                    if result["status"] == "incompatible":
+                        log(
+                            f"  ! {info.path.name}: INCOMPATIBLE FORMAT — refusing to recode",
+                            quiet,
+                        )
+                        log(f"      Reason: {result.get('error')}", quiet)
+                        details = []
+                        if info.dovi_profile is not None:
+                            details.append(f"Dolby Vision Profile {info.dovi_profile}")
+                        if info.video_codec:
+                            details.append(info.video_codec.upper())
+                        if info.video_bit_depth:
+                            details.append(f"{info.video_bit_depth}-bit")
+                        if info.video_hdr_type:
+                            details.append(info.video_hdr_type.upper())
+                        if details:
+                            log(f"      Detected: {', '.join(details)}", quiet)
+                        log(
+                            "      Action: skipped — re-acquire a Dolby Vision Profile 8 "
+                            "(HDR10-compatible) or non-DV source",
+                            quiet,
+                        )
+                    else:
+                        symbol = (
+                            "✓"
+                            if result["status"] == "success"
+                            else "✗"
+                            if result["status"] == "failed"
+                            else "○"
+                        )
+                        log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
+                        if result.get("error"):
+                            log(f"      Error: {result['error']}", quiet)
         except LockAcquisitionError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)

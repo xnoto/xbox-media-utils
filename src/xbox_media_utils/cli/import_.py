@@ -60,6 +60,12 @@ def import_file(
     dest_path = dest_dir / output_name
     result["destination"] = str(dest_path)
 
+    if info.incompatible_reason:
+        result["status"] = "incompatible"
+        result["action"] = "skip"
+        result["error"] = info.incompatible_reason
+        return result
+
     has_subs = has_extractable_subs(info)
     hdr10_path = dest_dir / (info.path.stem + ".HDR10.mkv")
     needs_hdr10 = needs_hdr10_copy(info, hdr10_path)
@@ -323,6 +329,26 @@ def main():
             if result.get("dovi_action"):
                 print(f"      + {result['dovi_action']}")
             success += 1
+        elif result["status"] == "incompatible":
+            print("    !! INCOMPATIBLE FORMAT — refusing to import")
+            print(f"       Reason: {result.get('error')}")
+            details = []
+            if info.dovi_profile is not None:
+                details.append(f"Dolby Vision Profile {info.dovi_profile}")
+            if info.video_codec:
+                details.append(info.video_codec.upper())
+            if info.video_bit_depth:
+                details.append(f"{info.video_bit_depth}-bit")
+            if info.video_hdr_type:
+                details.append(info.video_hdr_type.upper())
+            if details:
+                print(f"       Detected: {', '.join(details)}")
+            print(f"       File:    {filepath.name}")
+            print(
+                "       Action:  skipped — re-acquire a Dolby Vision Profile 8 "
+                "(HDR10-compatible) source, or a non-DV HDR10/SDR source"
+            )
+            failed += 1
         else:
             print(f"    X Failed: {result.get('error')}")
             failed += 1

@@ -212,8 +212,19 @@ def analyze_recode_needs(info: MediaInfo) -> None:
             info.video_recode_reason = (
                 f"Dolby Vision Profile {info.dovi_profile} is incompatible with Plex on Xbox"
             )
+            # Profile 8 has an HDR10-compatible base layer (BT.2020/PQ) that the
+            # current zscale tonemap pipeline can correctly convert to BT.709.
+            # Other profiles (4/5/7) carry a non-HDR10-compatible BL — e.g. P5's
+            # IPT-PQ-C2 — which cannot be tonemapped without applying the DV RPU
+            # reshaping. That requires libdovi, which the bundled ffmpeg lacks.
+            if info.dovi_profile != 8:
+                info.incompatible_reason = (
+                    f"Dolby Vision Profile {info.dovi_profile} cannot be tonemapped "
+                    "to BT.709 with the current pipeline (libdovi required)"
+                )
         else:
             info.video_recode_reason = "Dolby Vision is incompatible with Plex on Xbox"
+            info.incompatible_reason = "Unknown Dolby Vision profile cannot be safely tonemapped"
     elif info.video_codec and info.video_codec not in COMPATIBLE_VIDEO_CODECS:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"

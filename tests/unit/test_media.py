@@ -125,3 +125,63 @@ def test_analyze_recode_needs_leaves_8bit_sdr_hevc_alone():
     analyze_recode_needs(info)
 
     assert info.needs_video_recode is False
+
+
+def test_analyze_recode_needs_blocks_dolby_vision_profile_5_as_incompatible():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=5,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is True
+    assert info.incompatible_reason is not None
+    assert "Profile 5" in info.incompatible_reason
+    assert "libdovi" in info.incompatible_reason
+
+
+def test_analyze_recode_needs_blocks_dolby_vision_profile_7_as_incompatible():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=7,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.incompatible_reason is not None
+    assert "Profile 7" in info.incompatible_reason
+
+
+def test_analyze_recode_needs_keeps_dolby_vision_profile_8_processable():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=8,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.needs_video_recode is True
+    assert info.incompatible_reason is None
+
+
+def test_analyze_recode_needs_blocks_unknown_dolby_vision_as_incompatible():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.incompatible_reason is not None

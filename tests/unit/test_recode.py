@@ -41,3 +41,49 @@ def test_process_file_sets_ownership_for_extracted_subtitles(tmp_path: Path, mon
     assert result["status"] == "success"
     assert (subtitle_path, "plex", "libstoragemgmt") in ownership_calls
     assert (media_path, "plex", "libstoragemgmt") in ownership_calls
+
+
+def test_process_file_refuses_incompatible_format(tmp_path: Path):
+    media_path = tmp_path / "movie.mkv"
+    media_path.write_text("input")
+
+    info = MediaInfo(
+        path=media_path,
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=5,
+        incompatible_reason="Dolby Vision Profile 5 cannot be tonemapped (libdovi required)",
+    )
+
+    result = recode.process_file(info)
+
+    assert result["status"] == "incompatible"
+    assert result["video_action"] == "skip"
+    assert "Profile 5" in result["error"]
+
+
+def test_write_incompatible_report_lists_only_blocked_files(tmp_path: Path):
+    blocked = MediaInfo(
+        path=Path("/lib/Show.S01E01.mkv"),
+        video_codec="hevc",
+        video_bit_depth=10,
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=5,
+        incompatible_reason="Dolby Vision Profile 5 cannot be tonemapped",
+    )
+    fine = MediaInfo(path=Path("/lib/Show.S01E02.mkv"), video_codec="hevc")
+    output = tmp_path / "incompat.txt"
+
+    count = recode.write_incompatible_report([blocked, fine], output)
+
+    assert count == 1
+    contents = output.read_text(encoding="utf-8")
+    assert "/lib/Show.S01E01.mkv" in contents
+    assert "/lib/Show.S01E02.mkv" not in contents
+    assert "DV Profile 5" in contents
+    assert "10-bit" in contents
+    # Tab-separated: path<tab>details<tab>reason
+    line = contents.strip().split("\n")[0]
+    assert line.count("\t") == 2
