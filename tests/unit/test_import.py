@@ -36,3 +36,26 @@ def test_import_file_sets_ownership_for_hdr10_copy(tmp_path: Path, monkeypatch):
     assert result["status"] == "success"
     assert (dest_dir / "movie.mkv", "plex", "libstoragemgmt") in ownership_calls
     assert (hdr10_path, "plex", "libstoragemgmt") in ownership_calls
+
+
+def test_import_file_refuses_incompatible_format(tmp_path: Path):
+    source = tmp_path / "movie.mkv"
+    source.write_text("input")
+    dest_dir = tmp_path / "dest"
+
+    info = MediaInfo(
+        path=source,
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        dovi_profile=5,
+        incompatible_reason="Dolby Vision Profile 5 cannot be tonemapped (libdovi required)",
+    )
+
+    result = import_cli.import_file(info, dest_dir, tmp_path)
+
+    assert result["status"] == "incompatible"
+    assert result["action"] == "skip"
+    assert "Profile 5" in result["error"]
+    # No file should be written.
+    assert not (dest_dir / "movie.mkv").exists()
