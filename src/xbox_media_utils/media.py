@@ -224,9 +224,7 @@ def analyze_recode_needs(info: MediaInfo) -> None:
                 )
         else:
             info.video_recode_reason = "Dolby Vision is incompatible with Plex on Xbox"
-            info.incompatible_reason = (
-                "Unknown Dolby Vision profile cannot be safely tonemapped"
-            )
+            info.incompatible_reason = "Unknown Dolby Vision profile cannot be safely tonemapped"
     elif info.video_codec and info.video_codec not in COMPATIBLE_VIDEO_CODECS:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"
