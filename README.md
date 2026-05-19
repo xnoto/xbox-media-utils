@@ -39,6 +39,9 @@ xbox-recode scan /path/to/library
 # Process everything
 xbox-recode process /path/to/library
 
+# Process archived DoVi backups only (copy video, normalize audio/subtitles)
+xbox-recode process-backups /path/to/plex/backup
+
 # Resync an entire library after compatibility rules change
 xbox-recode process /mnt/media/plex/movies
 xbox-recode process /mnt/media/plex/tv

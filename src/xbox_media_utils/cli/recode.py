@@ -63,6 +63,7 @@ def process_file(
     plex_group: str = PLEX_GROUP,
     dovi_backup_root: Path | None = None,
     library_root: Path | None = None,
+    process_dovi_backup: bool = False,
 ) -> dict:
     """Process a single file."""
     result: dict[str, Any] = {
@@ -78,25 +79,34 @@ def process_file(
     }
 
     has_subs = has_extractable_subs(info)
-    needs_hdr10 = needs_hdr10_copy(info)
+    needs_hdr10 = False if process_dovi_backup else needs_hdr10_copy(info)
     can_promote_hdr10 = info.has_dovi_profile_8 and not info.needs_audio_recode and not has_subs
     processing_info = info
     processing_from_hdr10 = False
 
-    if info.incompatible_reason:
+    if process_dovi_backup:
+        processing_info = replace(
+            info,
+            needs_video_recode=False,
+            video_recode_reason=None,
+            incompatible_reason=None,
+            has_dovi_profile_8=False,
+        )
+        result["video_action"] = "copy: archived DoVi backup"
+    elif info.incompatible_reason:
         result["status"] = "incompatible"
         result["video_action"] = "skip"
         result["error"] = info.incompatible_reason
         return result
 
-    if not needs_processing(info) and not has_subs and not needs_hdr10:
+    if not needs_processing(processing_info) and not has_subs and not needs_hdr10:
         result["status"] = "compatible"
         return result
 
-    if info.needs_video_recode:
-        result["video_action"] = f"recode: {info.video_recode_reason}"
-    if info.needs_audio_recode:
-        result["audio_action"] = f"recode: {info.audio_recode_reason}"
+    if processing_info.needs_video_recode:
+        result["video_action"] = f"recode: {processing_info.video_recode_reason}"
+    if processing_info.needs_audio_recode:
+        result["audio_action"] = f"recode: {processing_info.audio_recode_reason}"
     if has_subs:
         text_count = sum(1 for s in info.subtitle_tracks if s.is_text)
         image_count = sum(1 for s in info.subtitle_tracks if s.is_image)
@@ -343,6 +353,40 @@ def scan_directory(path: Path, quiet: bool = False) -> list:
     return results
 
 
+def scan_dovi_backups(path: Path, quiet: bool = False) -> list:
+    """Scan archived DoVi backup files for audio/subtitle processing."""
+    files = [f for f in collect_media_files(path, MEDIA_EXTENSIONS) if f.name.endswith(".DV.mkv")]
+
+    results = []
+    for f in files:
+        if ".xbox." in f.name or is_sample_file(f):
+            continue
+        log(f"Probing backup: {f.name}...", quiet)
+        info = probe_file(f)
+        if info.probe_error:
+            log(f"  ERROR: {info.probe_error}", quiet)
+        else:
+            reasons = []
+            if info.needs_audio_recode:
+                reasons.append("AUDIO")
+            if has_extractable_subs(info):
+                text_count = sum(1 for s in info.subtitle_tracks if s.is_text)
+                image_count = sum(1 for s in info.subtitle_tracks if s.is_image)
+                sub_parts = []
+                if text_count:
+                    sub_parts.append(f"{text_count}txt")
+                if image_count:
+                    sub_parts.append(f"{image_count}img")
+                reasons.append(f"SUBS({'+'.join(sub_parts)})")
+            if reasons:
+                log(f"  -> {' '.join(reasons)}", quiet)
+            else:
+                log("  -> OK", quiet)
+        results.append(info)
+
+    return results
+
+
 def print_scan_summary(results: list, quiet: bool = False) -> None:
     """Print summary of scan results."""
     total = len(results)
@@ -419,6 +463,17 @@ def main():
     add_quiet_argument(process_parser)
     add_no_hardware_argument(process_parser)
 
+    # Backup command — process archived DoVi originals without video recoding.
+    backups_parser = subparsers.add_parser(
+        "process-backups",
+        help="Audio/subtitle-process archived .DV.mkv backups while copying video",
+    )
+    backups_parser.add_argument("path", type=Path, help="DoVi backup directory or file")
+    backups_parser.add_argument("--file", action="store_true", help="Single backup file only")
+    add_dry_run_argument(backups_parser)
+    add_quiet_argument(backups_parser)
+    add_no_hardware_argument(backups_parser)
+
     # Incompat command — list files the current pipeline refuses to process.
     incompat_parser = subparsers.add_parser(
         "incompat",
@@ -453,19 +508,27 @@ def main():
         count = write_incompatible_report(results, args.output)
         log(f"\nWrote {count} incompatible file(s) to {args.output}", quiet)
 
-    elif args.command == "process":
+    elif args.command in ("process", "process-backups"):
         try:
             with acquire_lock(LOCK_FILE):
+                process_dovi_backup = args.command == "process-backups"
                 if args.file:
                     results = [probe_file(args.path)]
+                elif process_dovi_backup:
+                    results = scan_dovi_backups(args.path, quiet)
                 else:
                     results = scan_directory(args.path, quiet)
 
-                to_process = [
-                    r
-                    for r in results
-                    if needs_processing(r) or has_extractable_subs(r) or needs_hdr10_copy(r)
-                ]
+                if process_dovi_backup:
+                    to_process = [
+                        r for r in results if r.needs_audio_recode or has_extractable_subs(r)
+                    ]
+                else:
+                    to_process = [
+                        r
+                        for r in results
+                        if needs_processing(r) or has_extractable_subs(r) or needs_hdr10_copy(r)
+                    ]
 
                 if not to_process:
                     log("No files need processing.", quiet)
@@ -481,6 +544,7 @@ def main():
                         use_hardware=use_hardware,
                         dovi_backup_root=dovi_backup_root,
                         library_root=plex_root,
+                        process_dovi_backup=process_dovi_backup,
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
 
