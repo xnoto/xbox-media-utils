@@ -2,9 +2,16 @@
 
 from pathlib import Path
 
+import pytest
+
 from xbox_media_utils.ffmpeg import build_ffmpeg_cmd
 from xbox_media_utils.media import can_use_vaapi
 from xbox_media_utils.models import AudioTrack, MediaInfo
+
+
+@pytest.fixture(autouse=True)
+def stub_static_ffmpeg(monkeypatch):
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.ffmpeg_path", lambda: "ffmpeg")
 
 
 def test_build_ffmpeg_cmd_uses_mono_duplication_filter_for_mono_recode():
