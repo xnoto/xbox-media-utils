@@ -152,6 +152,70 @@ def test_process_file_recodes_audio_from_hdr10_copy_and_archives_dovi(tmp_path: 
     assert not output_path.exists()
 
 
+def test_process_file_replaces_plex_copy_when_dovi_backup_already_exists(
+    tmp_path: Path, monkeypatch
+):
+    plex_root = tmp_path / "plex"
+    movie_dir = plex_root / "movies" / "Movie"
+    movie_dir.mkdir(parents=True)
+    media_path = movie_dir / "movie.mkv"
+    media_path.write_text("already-backed-up plex copy")
+    hdr10_path = movie_dir / "movie.HDR10.mkv"
+    output_path = movie_dir / "movie.xbox.mkv"
+    backup_root = plex_root / "backup"
+    archived_path = backup_root / "movies" / "Movie" / "movie.DV.mkv"
+    archived_path.parent.mkdir(parents=True)
+    archived_path.write_text("original dovi backup")
+
+    info = MediaInfo(
+        path=media_path,
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        audio_tracks=[
+            AudioTrack(
+                index=1,
+                codec="eac3",
+                channels=6,
+                needs_recode=True,
+                recode_reason="eac3 5.1 -> AAC stereo",
+            )
+        ],
+        needs_video_recode=True,
+        video_recode_reason="Dolby Vision Profile 8 is incompatible with Plex on Xbox",
+        dovi_profile=8,
+        has_dovi_profile_8=True,
+    )
+
+    def fake_create_hdr10_copy(info_arg, dest_dir, logger=print):
+        hdr10_path.write_text("hdr10 sidecar")
+        return True, "HDR10 copy already exists", hdr10_path
+
+    def fake_run_ffmpeg_with_fallback(processing_info, output, use_hardware):
+        assert processing_info.path == hdr10_path
+        output.write_text("processed hdr10 with aac")
+        return True, ""
+
+    monkeypatch.setattr(recode, "create_hdr10_copy", fake_create_hdr10_copy)
+    monkeypatch.setattr(recode, "run_ffmpeg_with_fallback", fake_run_ffmpeg_with_fallback)
+    monkeypatch.setattr(recode, "validate_output", lambda info, path: (True, "OK"))
+    monkeypatch.setattr(recode, "set_ownership", lambda path, user, group: (True, None))
+
+    result = recode.process_file(
+        info,
+        dovi_backup_root=backup_root,
+        library_root=plex_root,
+    )
+
+    assert result["status"] == "success"
+    assert result["output_path"] == str(media_path)
+    assert result["archived_dovi_path"] == str(archived_path)
+    assert media_path.read_text() == "processed hdr10 with aac"
+    assert archived_path.read_text() == "original dovi backup"
+    assert not hdr10_path.exists()
+    assert not output_path.exists()
+
+
 def test_process_file_recodes_audio_for_dovi_backup_without_video_recode(
     tmp_path: Path, monkeypatch
 ):

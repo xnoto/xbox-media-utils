@@ -155,13 +155,19 @@ def promote_hdr10_copy(
         primary_path, backup_root, library_root
     )
     if not archive_success:
-        return False, archive_msg, None
+        if archive_msg.startswith("Archive path already exists: "):
+            dv_path = get_dovi_archive_path(primary_path, backup_root, library_root)
+        else:
+            return False, archive_msg, None
 
     try:
         try:
-            shutil.move(str(hdr10_path), str(primary_path))
+            if archive_success:
+                shutil.move(str(hdr10_path), str(primary_path))
+            else:
+                hdr10_path.replace(primary_path)
         except Exception as e:
-            if dv_path:
+            if archive_success and dv_path:
                 shutil.move(str(dv_path), str(primary_path))
             return False, f"Rename failed: {e}", None
     except Exception as e:

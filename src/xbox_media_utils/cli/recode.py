@@ -36,6 +36,7 @@ from xbox_media_utils.files import collect_media_files, set_ownership
 from xbox_media_utils.hdr import (
     archive_dovi_original,
     create_hdr10_copy,
+    get_dovi_archive_path,
     needs_hdr10_copy,
     promote_hdr10_copy,
 )
@@ -263,25 +264,34 @@ def process_file(
     # Safe file replacement
     try:
         archived_dovi_path = None
+        archived_dovi_moved = False
         backup_path = None
         if processing_from_hdr10:
             archive_success, archive_msg, archived_dovi_path = archive_dovi_original(
                 info.path, dovi_backup_root, library_root
             )
             if not archive_success:
-                result["status"] = "failed"
-                result["error"] = archive_msg
-                if output_path.exists():
-                    output_path.unlink()
-                return result
+                if archive_msg.startswith("Archive path already exists: "):
+                    archived_dovi_path = get_dovi_archive_path(
+                        info.path, dovi_backup_root, library_root
+                    )
+                    result["dovi_action"] += "; backup already exists, replacing Plex copy"
+                else:
+                    result["status"] = "failed"
+                    result["error"] = archive_msg
+                    if output_path.exists():
+                        output_path.unlink()
+                    return result
+            else:
+                archived_dovi_moved = True
         else:
             backup_path = info.path.with_suffix(info.path.suffix + ".bak")
             info.path.rename(backup_path)
 
         try:
-            output_path.rename(final_path)
+            output_path.replace(final_path)
         except Exception as e:
-            if processing_from_hdr10 and archived_dovi_path:
+            if processing_from_hdr10 and archived_dovi_moved and archived_dovi_path:
                 shutil.move(str(archived_dovi_path), str(info.path))
             elif backup_path:
                 backup_path.rename(info.path)
@@ -536,6 +546,7 @@ def main():
 
                 log(f"\nProcessing {len(to_process)} files...", quiet)
 
+                failed_count = 0
                 for info in to_process:
                     result = process_file(
                         info,
@@ -547,6 +558,8 @@ def main():
                         process_dovi_backup=process_dovi_backup,
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
+                    if result["status"] == "failed":
+                        failed_count += 1
 
                     if result["status"] == "incompatible":
                         log(
@@ -581,6 +594,8 @@ def main():
                         log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
                         if result.get("error"):
                             log(f"      Error: {result['error']}", quiet)
+                if failed_count:
+                    sys.exit(1)
         except LockAcquisitionError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
