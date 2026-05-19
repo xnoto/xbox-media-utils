@@ -5,6 +5,7 @@ from xbox_media_utils.core.config import (
     DEFAULT_PLEX_ROOT,
     DEFAULT_PLEX_URL,
     DEFAULT_PREFS_PATH,
+    DOVI_BACKUP_ROOT,
     ENV_LIBRARY,
     ENV_PLEX_ROOT,
     IMPORT_LOG_DIR,
@@ -13,6 +14,7 @@ from xbox_media_utils.core.config import (
     PLEX_GROUP,
     PLEX_USER,
     get_config_value,
+    get_dovi_backup_root,
     get_plex_root,
 )
 from xbox_media_utils.core.locking import LockAcquisitionError, acquire_lock
@@ -33,6 +35,7 @@ __all__ = [
     # Config
     "get_config_value",
     "get_plex_root",
+    "get_dovi_backup_root",
     "PLEX_USER",
     "PLEX_GROUP",
     "DEFAULT_PLEX_ROOT",
@@ -42,6 +45,7 @@ __all__ = [
     "LOCK_FILE",
     "DEFAULT_PLEX_URL",
     "DEFAULT_PREFS_PATH",
+    "DOVI_BACKUP_ROOT",
     "ENV_PLEX_ROOT",
     "ENV_LIBRARY",
 ]

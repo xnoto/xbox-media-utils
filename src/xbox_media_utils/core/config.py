@@ -12,6 +12,7 @@ PLEX_GROUP = os.environ.get("XBOX_PLEX_GROUP", "libstoragemgmt")
 # Paths
 DEFAULT_PLEX_ROOT = os.environ.get("XBOX_PLEX_ROOT", "~/plex")
 DEFAULT_LIBRARY = os.environ.get("XBOX_DEFAULT_LIBRARY", "movies")
+DOVI_BACKUP_ROOT = os.environ.get("XBOX_DOVI_BACKUP_ROOT")
 
 # Logging
 LOG_DIR = os.environ.get("XBOX_RECODE_LOG_DIR", "/var/log/xbox-recode")
@@ -65,3 +66,15 @@ def get_plex_root(cli_value: str | None = None) -> Path:
     """
     value = get_config_value(cli_value, ENV_PLEX_ROOT, DEFAULT_PLEX_ROOT)
     return Path(value).expanduser()
+
+
+def get_dovi_backup_root(cli_value: str | None = None, plex_root: Path | None = None) -> Path:
+    """Get DoVi original backup root.
+
+    Defaults to a backup subdirectory under the Plex root so incompatible
+    originals are preserved but kept out of Plex library scans.
+    """
+    value = get_config_value(cli_value, "XBOX_DOVI_BACKUP_ROOT", DOVI_BACKUP_ROOT or "")
+    if value:
+        return Path(value).expanduser()
+    return (plex_root or get_plex_root()) / "backup"

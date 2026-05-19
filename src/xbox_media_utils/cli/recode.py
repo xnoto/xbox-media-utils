@@ -6,8 +6,10 @@ Processes existing media files in-place for Xbox Series X / Plex compatibility.
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +27,18 @@ from xbox_media_utils.core import (
     PLEX_USER,
     LockAcquisitionError,
     acquire_lock,
+    get_dovi_backup_root,
+    get_plex_root,
     write_log_entry,
 )
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
-from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy, promote_hdr10_copy
+from xbox_media_utils.hdr import (
+    archive_dovi_original,
+    create_hdr10_copy,
+    needs_hdr10_copy,
+    promote_hdr10_copy,
+)
 from xbox_media_utils.media import (
     has_extractable_subs,
     is_sample_file,
@@ -52,6 +61,8 @@ def process_file(
     use_hardware: bool = True,
     plex_user: str = PLEX_USER,
     plex_group: str = PLEX_GROUP,
+    dovi_backup_root: Path | None = None,
+    library_root: Path | None = None,
 ) -> dict:
     """Process a single file."""
     result: dict[str, Any] = {
@@ -66,10 +77,11 @@ def process_file(
         "error": None,
     }
 
-    needs_recode = needs_processing(info)
     has_subs = has_extractable_subs(info)
     needs_hdr10 = needs_hdr10_copy(info)
     can_promote_hdr10 = info.has_dovi_profile_8 and not info.needs_audio_recode and not has_subs
+    processing_info = info
+    processing_from_hdr10 = False
 
     if info.incompatible_reason:
         result["status"] = "incompatible"
@@ -77,7 +89,7 @@ def process_file(
         result["error"] = info.incompatible_reason
         return result
 
-    if not needs_recode and not has_subs and not needs_hdr10:
+    if not needs_processing(info) and not has_subs and not needs_hdr10:
         result["status"] = "compatible"
         return result
 
@@ -97,11 +109,14 @@ def process_file(
     if needs_hdr10:
         if can_promote_hdr10:
             result["dovi_action"] = (
-                f"promote HDR10 copy to primary and archive original as .DV.mkv "
+                f"promote HDR10 copy to primary and archive original outside Plex "
                 f"(DoVi Profile {info.dovi_profile})"
             )
         else:
-            result["dovi_action"] = f"create HDR10 copy (DoVi Profile {info.dovi_profile})"
+            result["dovi_action"] = (
+                f"create HDR10 copy, process it, and archive original "
+                f"(DoVi Profile {info.dovi_profile})"
+            )
 
     if dry_run:
         result["status"] = "would_process"
@@ -136,12 +151,17 @@ def process_file(
         }
         if not hdr10_success:
             log(f"    WARNING: HDR10 copy creation failed: {hdr10_msg}", quiet)
+            result["status"] = "failed"
+            result["error"] = f"HDR10 copy creation failed: {hdr10_msg}"
+            return result
         elif hdr10_path:
             set_ownership(hdr10_path, plex_user, plex_group)
 
         if can_promote_hdr10 and hdr10_success and hdr10_path:
             log(f"  Promoting HDR10 copy to primary filename: {info.path.name}", quiet)
-            promote_success, promote_msg, dv_path = promote_hdr10_copy(info, hdr10_path)
+            promote_success, promote_msg, dv_path = promote_hdr10_copy(
+                info, hdr10_path, dovi_backup_root, library_root
+            )
             if not promote_success:
                 result["status"] = "failed"
                 result["error"] = promote_msg
@@ -156,6 +176,20 @@ def process_file(
             result["archived_dovi_path"] = str(dv_path) if dv_path else None
             return result
 
+        if hdr10_success and hdr10_path:
+            processing_info = replace(
+                info,
+                path=hdr10_path,
+                video_hdr_type="hdr10",
+                needs_video_recode=False,
+                video_recode_reason=None,
+                dovi_profile=None,
+                has_dovi_profile_8=False,
+            )
+            processing_from_hdr10 = True
+
+    needs_recode = needs_processing(processing_info)
+
     # Remux-only path (no recode needed)
     if not needs_recode and has_subs:
         log(f"  Remuxing to strip embedded subs: {info.path.name}", quiet)
@@ -167,7 +201,7 @@ def process_file(
             "-v",
             "error",
             "-i",
-            str(info.path),
+            str(processing_info.path),
             "-map",
             "0:v:0",
             "-map",
@@ -198,7 +232,7 @@ def process_file(
     else:
         # Transcode path
         log(f"  Processing: {info.path.name}", quiet)
-        success, error = run_ffmpeg_with_fallback(info, output_path, use_hardware)
+        success, error = run_ffmpeg_with_fallback(processing_info, output_path, use_hardware)
 
         if not success:
             result["status"] = "failed"
@@ -208,7 +242,7 @@ def process_file(
             return result
 
     # Validate output
-    valid, msg = validate_output(info, output_path)
+    valid, msg = validate_output(processing_info, output_path)
     if not valid:
         result["status"] = "failed"
         result["error"] = f"Validation failed: {msg}"
@@ -218,13 +252,29 @@ def process_file(
 
     # Safe file replacement
     try:
-        backup_path = info.path.with_suffix(info.path.suffix + ".bak")
-        info.path.rename(backup_path)
+        archived_dovi_path = None
+        backup_path = None
+        if processing_from_hdr10:
+            archive_success, archive_msg, archived_dovi_path = archive_dovi_original(
+                info.path, dovi_backup_root, library_root
+            )
+            if not archive_success:
+                result["status"] = "failed"
+                result["error"] = archive_msg
+                if output_path.exists():
+                    output_path.unlink()
+                return result
+        else:
+            backup_path = info.path.with_suffix(info.path.suffix + ".bak")
+            info.path.rename(backup_path)
 
         try:
             output_path.rename(final_path)
         except Exception as e:
-            backup_path.rename(info.path)
+            if processing_from_hdr10 and archived_dovi_path:
+                shutil.move(str(archived_dovi_path), str(info.path))
+            elif backup_path:
+                backup_path.rename(info.path)
             result["status"] = "failed"
             result["error"] = f"Rename failed: {e}"
             if output_path.exists():
@@ -234,8 +284,11 @@ def process_file(
         # Set ownership
         set_ownership(final_path, plex_user, plex_group)
 
-        # Delete backup
-        backup_path.unlink()
+        if processing_from_hdr10 and processing_info.path.exists():
+            processing_info.path.unlink()
+        elif backup_path:
+            # Delete backup
+            backup_path.unlink()
 
     except Exception as e:
         result["status"] = "failed"
@@ -246,6 +299,8 @@ def process_file(
 
     result["status"] = "success"
     result["output_path"] = str(final_path)
+    if processing_from_hdr10 and archived_dovi_path:
+        result["archived_dovi_path"] = str(archived_dovi_path)
     return result
 
 
@@ -358,6 +413,8 @@ def main():
     process_parser = subparsers.add_parser("process", help="Process files")
     process_parser.add_argument("path", type=Path, help="Directory or file to process")
     process_parser.add_argument("--file", action="store_true", help="Single file only")
+    process_parser.add_argument("--plex", type=str, default=None, help="Plex root path")
+    process_parser.add_argument("--dovi-backup", type=str, default=None, help="DoVi backup root")
     add_dry_run_argument(process_parser)
     add_quiet_argument(process_parser)
     add_no_hardware_argument(process_parser)
@@ -384,6 +441,8 @@ def main():
 
     quiet = getattr(args, "quiet", False)
     use_hardware = not getattr(args, "no_hardware", False)
+    plex_root = get_plex_root(getattr(args, "plex", None))
+    dovi_backup_root = get_dovi_backup_root(getattr(args, "dovi_backup", None), plex_root)
 
     if args.command == "scan":
         results = scan_directory(args.path, quiet)
@@ -420,6 +479,8 @@ def main():
                         dry_run=args.dry_run,
                         quiet=quiet,
                         use_hardware=use_hardware,
+                        dovi_backup_root=dovi_backup_root,
+                        library_root=plex_root,
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
 

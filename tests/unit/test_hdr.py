@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from xbox_media_utils.hdr import promote_hdr10_copy
+from xbox_media_utils.hdr import get_dovi_archive_path, promote_hdr10_copy
 from xbox_media_utils.models import MediaInfo
 
 
@@ -35,8 +35,17 @@ def test_promote_hdr10_copy_fails_if_archive_already_exists(tmp_path: Path):
     success, message, archived = promote_hdr10_copy(info, hdr10)
 
     assert success is False
-    assert message == f"Archive path already exists: {dv_path.name}"
+    assert message == f"Archive path already exists: {dv_path}"
     assert archived is None
     assert primary.read_text() == "dovi"
     assert hdr10.read_text() == "hdr10"
     assert dv_path.read_text() == "existing"
+
+
+def test_get_dovi_archive_path_uses_backup_root_and_preserves_relative_path(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    primary = plex_root / "movies" / "Movie" / "movie.mkv"
+
+    archive_path = get_dovi_archive_path(primary, plex_root / "backup", plex_root)
+
+    assert archive_path == plex_root / "backup" / "movies" / "Movie" / "movie.DV.mkv"
