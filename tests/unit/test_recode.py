@@ -105,7 +105,15 @@ def test_process_file_recodes_audio_from_hdr10_copy_and_archives_dovi(tmp_path: 
         video_codec="hevc",
         video_hdr=True,
         video_hdr_type="dolby vision",
-        audio_tracks=[AudioTrack(index=1, codec="dts", channels=6, needs_recode=True)],
+        audio_tracks=[
+            AudioTrack(
+                index=1,
+                codec="dts",
+                channels=6,
+                needs_recode=True,
+                recode_reason="incompatible codec: dts -> AAC stereo",
+            )
+        ],
         needs_video_recode=True,
         video_recode_reason="Dolby Vision Profile 8 is incompatible with Plex on Xbox",
         dovi_profile=8,
@@ -142,3 +150,70 @@ def test_process_file_recodes_audio_from_hdr10_copy_and_archives_dovi(tmp_path: 
     assert archived_path.read_text() == "dovi"
     assert not hdr10_path.exists()
     assert not output_path.exists()
+
+
+def test_process_file_recodes_audio_for_dovi_backup_without_video_recode(
+    tmp_path: Path, monkeypatch
+):
+    media_path = tmp_path / "movie.DV.mkv"
+    media_path.write_text("dovi backup")
+    output_path = tmp_path / "movie.DV.xbox.mkv"
+
+    info = MediaInfo(
+        path=media_path,
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="dolby vision",
+        audio_tracks=[
+            AudioTrack(
+                index=1,
+                codec="dts",
+                channels=6,
+                needs_recode=True,
+                recode_reason="incompatible codec: dts -> AAC stereo",
+            )
+        ],
+        needs_video_recode=True,
+        video_recode_reason="Dolby Vision Profile 5 is incompatible with Plex on Xbox",
+        dovi_profile=5,
+        incompatible_reason="Dolby Vision Profile 5 cannot be tonemapped",
+    )
+
+    def fake_run_ffmpeg_with_fallback(processing_info, output, use_hardware):
+        assert processing_info.path == media_path
+        assert processing_info.needs_video_recode is False
+        assert processing_info.incompatible_reason is None
+        assert processing_info.needs_audio_recode is True
+        output.write_text("dovi backup with aac")
+        return True, ""
+
+    monkeypatch.setattr(recode, "run_ffmpeg_with_fallback", fake_run_ffmpeg_with_fallback)
+    monkeypatch.setattr(recode, "validate_output", lambda info, path: (True, "OK"))
+    monkeypatch.setattr(recode, "set_ownership", lambda path, user, group: (True, None))
+
+    result = recode.process_file(info, process_dovi_backup=True)
+
+    assert result["status"] == "success"
+    assert result["video_action"] == "copy: archived DoVi backup"
+    assert result["audio_action"] == "recode: incompatible codec: dts -> AAC stereo"
+    assert media_path.read_text() == "dovi backup with aac"
+    assert not output_path.exists()
+
+
+def test_scan_dovi_backups_includes_only_dv_mkv_files(tmp_path: Path, monkeypatch):
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    dv_path = backup / "movie.DV.mkv"
+    normal_path = backup / "movie.mkv"
+    hdr10_path = backup / "movie.HDR10.mkv"
+    for path in (dv_path, normal_path, hdr10_path):
+        path.write_text("media")
+
+    def fake_probe_file(path):
+        return MediaInfo(path=path)
+
+    monkeypatch.setattr(recode, "probe_file", fake_probe_file)
+
+    results = recode.scan_dovi_backups(backup, quiet=True)
+
+    assert [result.path for result in results] == [dv_path]
