@@ -1,10 +1,15 @@
 """Tests for ffmpeg command generation."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from xbox_media_utils.ffmpeg import build_ffmpeg_cmd
+from xbox_media_utils.ffmpeg import (
+    _is_vaapi_error,
+    build_ffmpeg_cmd,
+    run_ffmpeg_with_fallback,
+)
 from xbox_media_utils.media import can_use_vaapi
 from xbox_media_utils.models import AudioTrack, MediaInfo
 
@@ -127,3 +132,46 @@ def test_can_use_vaapi_returns_false_for_dolby_vision_recode():
     )
 
     assert can_use_vaapi(info) is False
+
+
+def test_vaapi_device_initialization_error_is_fallback_eligible():
+    stderr = """
+    [VAAPI @ 0x562663f611c0] Failed to initialise VAAPI connection: -1 (unknown libva error).
+    Device creation failed: -5.
+    Failed to set value '/dev/dri/renderD128' for option 'vaapi_device': Input/output error
+    Error parsing global options: Input/output error
+    """
+
+    assert _is_vaapi_error(stderr) is True
+
+
+def test_run_ffmpeg_with_fallback_retries_vaapi_device_init_failure(monkeypatch, tmp_path):
+    info = MediaInfo(
+        path=Path("episode.mkv"),
+        video_codec="vc1",
+        video_bit_depth=8,
+        needs_video_recode=True,
+        audio_tracks=[AudioTrack(index=1, codec="ac3", channels=6, needs_recode=True)],
+    )
+    output = tmp_path / "episode.mkv"
+    calls = []
+
+    def fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stderr="Failed to set value '/dev/dri/renderD128' for option 'vaapi_device'",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stderr="")
+
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.subprocess.run", fake_run)
+
+    success, error = run_ffmpeg_with_fallback(info, output, use_hardware=True)
+
+    assert success is True
+    assert error == ""
+    assert len(calls) == 2
+    assert "hevc_vaapi" in calls[0]
+    assert "libx265" in calls[1]
