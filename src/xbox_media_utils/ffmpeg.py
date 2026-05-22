@@ -4,6 +4,7 @@ import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from .media import ffmpeg_path, ffprobe_path, run_cmd
 from .models import MediaInfo
@@ -236,6 +237,27 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
     return True, "OK"
 
 
+def _is_vaapi_error(stderr: Optional[str]) -> bool:
+    """Return True if ffmpeg stderr indicates a VAAPI setup/processing failure."""
+    if not stderr:
+        return False
+
+    stderr_lower = stderr.lower()
+    vaapi_errors = [
+        "failed setup for format vaapi",
+        "hwaccel initialisation returned error",
+        "impossible to convert between the formats",
+        "error reinitializing filters",
+        "failed to inject frame into filter network",
+        "failed to initialise vaapi connection",
+        "failed to initialize vaapi connection",
+        "device creation failed",
+        "vaapi_device",
+    ]
+
+    return any(err in stderr_lower for err in vaapi_errors)
+
+
 def run_ffmpeg_with_fallback(
     info: MediaInfo, output_path: Path, use_hardware: bool = True
 ) -> tuple[bool, str]:
@@ -259,17 +281,8 @@ def run_ffmpeg_with_fallback(
         if proc.returncode == 0:
             return True, ""
 
-        # Check if error is VAAPI-related (hwaccel init failure)
-        stderr = proc.stderr.lower() if proc.stderr else ""
-        vaapi_errors = [
-            "failed setup for format vaapi",
-            "hwaccel initialisation returned error",
-            "impossible to convert between the formats",
-            "error reinitializing filters",
-            "failed to inject frame into filter network",
-        ]
-
-        if any(err in stderr for err in vaapi_errors):
+        # Check if error is VAAPI-related (hwaccel/device init or processing failure)
+        if _is_vaapi_error(proc.stderr):
             print("  VAAPI failed, falling back to software decode...")
             if output_path.exists():
                 output_path.unlink()
