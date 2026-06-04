@@ -58,7 +58,7 @@ def create_hdr10_copy(
         "-c:v",
         "copy",
         "-bsf:v",
-        "filter_units=remove_types=62",  # Remove DoVi RPU NAL units
+        "dovi_rpu=strip=1",  # Remove Dolby Vision RPU metadata
         "-c:a",
         "copy",
         "-c:s",
