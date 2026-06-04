@@ -174,6 +174,22 @@ def test_analyze_recode_needs_keeps_dolby_vision_profile_8_processable():
     assert info.incompatible_reason is None
 
 
+def test_analyze_recode_needs_treats_dovi_profile_as_dolby_vision_when_hdr10_tagged():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_hdr=True,
+        video_hdr_type="hdr10",
+        dovi_profile=8,
+    )
+
+    analyze_recode_needs(info)
+
+    assert info.video_hdr_type == "dolby vision"
+    assert info.needs_video_recode is True
+    assert info.incompatible_reason is None
+
+
 def test_analyze_recode_needs_blocks_unknown_dolby_vision_as_incompatible():
     info = MediaInfo(
         path=Path("movie.mkv"),
