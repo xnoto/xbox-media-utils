@@ -150,7 +150,8 @@ def probe_file(filepath: Path) -> MediaInfo:
             color_primaries = stream.get("color_primaries", "").lower()
             if "smpte2084" in color_transfer or "arib-std-b67" in color_transfer:
                 info.video_hdr = True
-                info.video_hdr_type = "hlg" if "arib-std-b67" in color_transfer else "hdr10"
+                if info.video_hdr_type != "dolby vision":
+                    info.video_hdr_type = "hlg" if "arib-std-b67" in color_transfer else "hdr10"
             if "bt2020" in color_primaries:
                 info.video_hdr = True
             break
@@ -195,6 +196,9 @@ def probe_file(filepath: Path) -> MediaInfo:
         info.dovi_profile = detect_dovi_profile(filepath)
 
     # Check for problematic DoVi Profile 8
+    if info.dovi_profile is not None:
+        info.video_hdr = True
+        info.video_hdr_type = "dolby vision"
     if info.dovi_profile == 8:
         info.has_dovi_profile_8 = True
 
@@ -206,7 +210,9 @@ def probe_file(filepath: Path) -> MediaInfo:
 
 def analyze_recode_needs(info: MediaInfo) -> None:
     """Determine if video/audio need recoding (per-track for audio)."""
-    if info.video_hdr_type == "dolby vision":
+    if info.video_hdr_type == "dolby vision" or info.dovi_profile is not None:
+        info.video_hdr = True
+        info.video_hdr_type = "dolby vision"
         info.needs_video_recode = True
         if info.dovi_profile is not None:
             info.video_recode_reason = (

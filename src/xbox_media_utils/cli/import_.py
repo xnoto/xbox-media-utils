@@ -10,6 +10,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,17 @@ from xbox_media_utils.core import (
     PLEX_GROUP,
     PLEX_USER,
     get_config_value,
+    get_dovi_backup_root,
     get_plex_root,
     write_log_entry,
 )
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import collect_media_files, set_ownership
-from xbox_media_utils.hdr import create_hdr10_copy, needs_hdr10_copy
+from xbox_media_utils.hdr import (
+    copy_dovi_original_to_archive,
+    create_hdr10_copy,
+    needs_hdr10_copy,
+)
 from xbox_media_utils.media import has_extractable_subs, needs_processing, probe_file
 from xbox_media_utils.subtitles import extract_subtitles
 
@@ -42,6 +48,7 @@ def import_file(
     info,
     dest_dir: Path,
     plex_root: Path,
+    dovi_backup_root: Path | None = None,
     dry_run: bool = False,
     use_hardware: bool = True,
 ) -> dict:
@@ -53,6 +60,7 @@ def import_file(
         "action": "copy" if not needs_processing(info) else "transcode",
         "subtitles_extracted": [],
         "hdr10_copy": None,
+        "archived_dovi_path": None,
         "error": None,
     }
 
@@ -82,7 +90,10 @@ def import_file(
                 sub_parts.append(f"{image_count} image")
             result["subtitle_action"] = f"extract {', '.join(sub_parts)} subtitle(s)"
         if needs_hdr10:
-            result["dovi_action"] = f"create HDR10 copy (DoVi Profile {info.dovi_profile})"
+            result["dovi_action"] = (
+                f"import HDR10 copy as primary and archive DoVi original "
+                f"(DoVi Profile {info.dovi_profile})"
+            )
         return result
 
     def set_output_ownership(path_str: str) -> None:
@@ -102,6 +113,118 @@ def import_file(
         for extracted in result["subtitles_extracted"]:
             if extracted.get("success") and extracted.get("output"):
                 set_output_ownership(extracted["output"])
+
+    if needs_hdr10:
+        backup_root = dovi_backup_root or (plex_root / "backup")
+        archive_success, archive_msg, archived_path = copy_dovi_original_to_archive(
+            info.path, dest_path, backup_root, plex_root
+        )
+        if not archive_success and not archive_msg.startswith("Archive path already exists: "):
+            result["status"] = "failed"
+            result["error"] = archive_msg
+            return result
+        result["archived_dovi_path"] = str(archived_path) if archived_path else None
+
+        print("    Creating HDR10 primary for DoVi P8...")
+        hdr10_success, hdr10_msg, hdr10_path_result = create_hdr10_copy(info, dest_dir)
+        result["hdr10_copy"] = {
+            "success": hdr10_success,
+            "message": hdr10_msg,
+            "path": str(hdr10_path_result) if hdr10_path_result else None,
+        }
+        if not hdr10_success or not hdr10_path_result:
+            result["status"] = "failed"
+            result["error"] = f"HDR10 copy creation failed: {hdr10_msg}"
+            return result
+
+        set_output_ownership(str(hdr10_path_result))
+        processing_info = replace(
+            info,
+            path=hdr10_path_result,
+            video_hdr_type="hdr10",
+            needs_video_recode=False,
+            video_recode_reason=None,
+            dovi_profile=None,
+            has_dovi_profile_8=False,
+        )
+
+        temp_path = dest_dir / (info.path.stem + ".importing.mkv")
+        if processing_info.needs_audio_recode:
+            print(f"    Transcoding audio from HDR10 copy: {info.path.name}")
+            success, error = run_ffmpeg_with_fallback(processing_info, temp_path, use_hardware)
+
+            if not success:
+                result["status"] = "failed"
+                result["error"] = error[-500:] if error else "Transcode failed"
+                if temp_path.exists():
+                    temp_path.unlink()
+                return result
+
+            valid, msg = validate_output(processing_info, temp_path)
+            if not valid:
+                result["status"] = "failed"
+                result["error"] = f"Validation: {msg}"
+                if temp_path.exists():
+                    temp_path.unlink()
+                return result
+
+            temp_path.replace(dest_path)
+            if hdr10_path_result.exists():
+                hdr10_path_result.unlink()
+            result["action"] = "transcode"
+        elif has_subs:
+            print(f"    Remuxing HDR10 copy (strip subs): {info.path.name}")
+            from xbox_media_utils.media import ffmpeg_path
+
+            cmd = [
+                ffmpeg_path(),
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(processing_info.path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "copy",
+                "-sn",
+                "-max_muxing_queue_size",
+                "65536",
+                str(temp_path),
+            ]
+
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+
+            if proc.returncode != 0:
+                result["status"] = "failed"
+                result["error"] = proc.stderr[-500:] if proc.stderr else "Remux failed"
+                if temp_path.exists():
+                    temp_path.unlink()
+                return result
+
+            valid, msg = validate_output(processing_info, temp_path)
+            if not valid:
+                result["status"] = "failed"
+                result["error"] = f"Validation: {msg}"
+                if temp_path.exists():
+                    temp_path.unlink()
+                return result
+
+            temp_path.replace(dest_path)
+            if hdr10_path_result.exists():
+                hdr10_path_result.unlink()
+            result["action"] = "remux"
+        else:
+            hdr10_path_result.replace(dest_path)
+            result["action"] = "hdr10-copy"
+
+        set_ownership(dest_path, PLEX_USER, PLEX_GROUP)
+        result["status"] = "success"
+        return result
 
     # Handle main file
     if needs_processing(info):
@@ -239,6 +362,7 @@ def main():
         metavar="PATH",
         help=f"Plex root path (env: {ENV_PLEX_ROOT})",
     )
+    parser.add_argument("--dovi-backup", type=str, default=None, help="DoVi backup root")
     add_dry_run_argument(parser)
     add_no_hardware_argument(parser)
 
@@ -249,6 +373,7 @@ def main():
     use_hardware = not args.no_hardware
 
     plex_root = get_plex_root(args.plex)
+    dovi_backup_root = get_dovi_backup_root(args.dovi_backup, plex_root)
     library_name = get_config_value(args.library, ENV_LIBRARY, DEFAULT_LIBRARY)
     library_path = plex_root / library_name
 
@@ -315,7 +440,12 @@ def main():
             print(f"    Detected: {' '.join(flags)}")
 
         result = import_file(
-            info, dest_dir, plex_root, dry_run=args.dry_run, use_hardware=use_hardware
+            info,
+            dest_dir,
+            plex_root,
+            dovi_backup_root=dovi_backup_root,
+            dry_run=args.dry_run,
+            use_hardware=use_hardware,
         )
         result["timestamp"] = datetime.now().isoformat()
         if not args.dry_run:

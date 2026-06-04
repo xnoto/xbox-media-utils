@@ -139,6 +139,29 @@ def archive_dovi_original(
     return True, "DoVi original archived", dv_path
 
 
+def copy_dovi_original_to_archive(
+    source_path: Path,
+    primary_path: Path,
+    backup_root: Optional[Path] = None,
+    library_root: Optional[Path] = None,
+) -> tuple[bool, str, Optional[Path]]:
+    """Copy an imported DoVi original to the archive location outside Plex."""
+    dv_path = get_dovi_archive_path(primary_path, backup_root, library_root)
+
+    if not source_path.exists():
+        return False, "Source file does not exist", None
+    if dv_path.exists():
+        return False, f"Archive path already exists: {dv_path}", dv_path
+
+    try:
+        dv_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, dv_path)
+    except Exception as e:
+        return False, f"Archive copy failed: {e}", None
+
+    return True, "DoVi original archived", dv_path
+
+
 def promote_hdr10_copy(
     info: MediaInfo,
     hdr10_path: Path,
