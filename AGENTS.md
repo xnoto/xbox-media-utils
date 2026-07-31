@@ -54,6 +54,7 @@ def log(msg):
     if not QUIET_MODE:  # Global!
         print(msg)
 
+
 # Good
 def log(msg, quiet: bool = False):  # Explicit
     if not quiet:
