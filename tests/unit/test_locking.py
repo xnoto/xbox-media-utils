@@ -29,13 +29,15 @@ class TestAcquireLock:
             assert content == str(os.getpid())
 
     def test_lock_released_after_exit(self, tmp_path):
-        """Lock should be released and file removed after context exit."""
+        """Lock should be released even though its stable file remains."""
         lock_file = tmp_path / "test.lock"
 
         with acquire_lock(lock_file):
-            pass
+            inode = lock_file.stat().st_ino
 
-        assert not lock_file.exists()
+        assert lock_file.exists()
+        with acquire_lock(lock_file):
+            assert lock_file.stat().st_ino == inode
 
     def test_lock_creates_parent_directories(self, tmp_path):
         """Parent directories should be created if they don't exist."""
@@ -77,9 +79,13 @@ class TestAcquireLock:
         lock_file = tmp_path / "test.lock"
 
         with acquire_lock(lock_file):
+            inode = lock_file.stat().st_ino
             with pytest.raises(LockAcquisitionError):
                 with acquire_lock(lock_file):
                     pass  # Should not reach here
+            assert lock_file.exists()
+            assert lock_file.stat().st_ino == inode
+            assert lock_file.read_text() == str(os.getpid())
 
     def test_lock_release_on_exception(self, tmp_path):
         """Lock should be released even if exception occurs in context."""
@@ -89,7 +95,17 @@ class TestAcquireLock:
             with acquire_lock(lock_file):
                 raise ValueError("Test exception")
 
-        assert not lock_file.exists()
+        assert lock_file.exists()
+        with acquire_lock(lock_file):
+            pass
+
+    def test_critical_section_oserror_is_not_wrapped(self, tmp_path):
+        """OSError raised by protected work should propagate unchanged."""
+        lock_file = tmp_path / "test.lock"
+
+        with pytest.raises(OSError, match="critical section failed"):
+            with acquire_lock(lock_file):
+                raise OSError("critical section failed")
 
     def test_lock_acquired_with_path_object(self, tmp_path):
         """Should work with both string and Path objects."""
@@ -107,8 +123,13 @@ class TestAcquireLock:
     def test_sequential_locks_same_file(self, tmp_path):
         """Should be able to acquire same lock file sequentially."""
         lock_file = tmp_path / "test.lock"
+        inode = None
 
         for _ in range(3):
             with acquire_lock(lock_file):
                 assert lock_file.exists()
-            assert not lock_file.exists()
+                current_inode = lock_file.stat().st_ino
+                if inode is None:
+                    inode = current_inode
+                assert current_inode == inode
+            assert lock_file.exists()
