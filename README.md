@@ -81,6 +81,9 @@ xbox-import Movie/ --plex /mnt/media/plex
 
 # Dry run
 xbox-import Movie/ --dry-run
+
+# Import without triggering a Plex scan
+xbox-import Movie/ --no-plex-scan
 ```
 
 **What it does:**
@@ -89,10 +92,13 @@ xbox-import Movie/ --dry-run
 - Preserves directory structure
 - Sets ownership on destination
 - Creates parent directories as needed
+- After all files import successfully, triggers one partial Plex scan for the imported file or directory
+- Skips the automatic scan for dry runs, failed imports, or when `--no-plex-scan` is used
 
 ### xbox-plex-scan
 
-Trigger Plex library scans via HTTP API. Useful after importing or moving files.
+Trigger Plex library scans via HTTP API. Useful for manual scans after moving files or imports made
+with `--no-plex-scan`.
 
 ```bash
 # Partial scan by path (auto-detects library section)

@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from xbox_media_utils.api import PlexError, PlexScanner
 from xbox_media_utils.cli.common import (
     add_dry_run_argument,
     add_no_hardware_argument,
@@ -42,6 +43,18 @@ from xbox_media_utils.hdr import (
 )
 from xbox_media_utils.media import has_extractable_subs, needs_processing, probe_file
 from xbox_media_utils.subtitles import extract_subtitles
+
+
+def trigger_plex_scan(target: Path) -> bool:
+    """Trigger a partial Plex scan for an imported path."""
+    try:
+        result = PlexScanner().scan_path(target)
+    except PlexError as e:
+        print(f"  [plex_scan] {e}", file=sys.stderr)
+        return False
+
+    print(f"  [plex_scan] {result['message']}")
+    return bool(result["success"])
 
 
 def import_file(
@@ -363,6 +376,11 @@ def main():
         help=f"Plex root path (env: {ENV_PLEX_ROOT})",
     )
     parser.add_argument("--dovi-backup", type=str, default=None, help="DoVi backup root")
+    parser.add_argument(
+        "--no-plex-scan",
+        action="store_true",
+        help="Do not trigger a Plex scan after a successful import",
+    )
     add_dry_run_argument(parser)
     add_no_hardware_argument(parser)
 
@@ -403,6 +421,7 @@ def main():
     print()
 
     success = failed = 0
+    scan_target: Path | None = None
 
     for idx, filepath in enumerate(files):
         if filepath.name.endswith(".HDR10.mkv"):
@@ -454,6 +473,7 @@ def main():
         if result["status"] == "success":
             print(f"    -> {result['action']}: {result['destination']}")
             success += 1
+            scan_target = dest_base if source_is_dir else Path(result["destination"])
         elif result["status"] == "would_import":
             print(f"    -> Would {result['action']}: {result['destination']}")
             if result.get("dovi_action"):
@@ -487,7 +507,18 @@ def main():
     print(f"Complete: {success} succeeded, {failed} failed")
     print(f"Source preserved at: {args.source}")
 
-    sys.exit(0 if failed == 0 else 1)
+    scan_ok = True
+    if (
+        failed == 0
+        and success > 0
+        and not args.dry_run
+        and not args.no_plex_scan
+        and scan_target is not None
+    ):
+        print(f"Triggering Plex scan for: {scan_target}")
+        scan_ok = trigger_plex_scan(scan_target)
+
+    sys.exit(0 if failed == 0 and scan_ok else 1)
 
 
 if __name__ == "__main__":
