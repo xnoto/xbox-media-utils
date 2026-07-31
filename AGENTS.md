@@ -23,7 +23,7 @@ src/xbox_media_utils/
 │   └── plex.py         # Plex HTTP API client
 ├── cli/
 │   ├── common.py       # Shared CLI utilities
-│   ├── import_.py      # CLI: import tool
+│   ├── import_.py      # CLI: import tool with post-import Plex scan
 │   ├── plex_scan.py    # CLI: plex scanner
 │   └── recode.py       # CLI: in-place processor
 ├── core/
@@ -89,6 +89,12 @@ If you see "VAAPI failed, falling back to software decode" in logs, this is work
 ### OCR Timeouts
 
 pgsrip can hang on corrupted PGS streams. We use SIGALRM for 10-minute timeout. If OCR fails, the SUP file is kept as fallback (though Plex won't use it).
+
+### Post-Import Plex Scans
+
+`xbox-import` triggers one partial Plex scan after all files import successfully. It does not scan
+after a failed import or dry run, and `--no-plex-scan` disables the behavior. A failed scan makes the
+command exit nonzero even though the imported files remain in place.
 
 ### Lock Files
 
