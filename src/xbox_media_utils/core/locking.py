@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import os
 from collections.abc import Generator
@@ -36,22 +35,32 @@ def acquire_lock(lock_file: str | Path) -> Generator[Optional[IO], None, None]:
         ...     process_files()
     """
     fd: Optional[IO] = None
+    acquired = False
     lock_path = Path(lock_file)
 
     try:
         # Ensure parent directory exists
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        fd = open(lock_file, "w")
+        # Keep a stable inode for flock. The pathname may remain after release;
+        # its existence is not evidence that the lock is currently held.
+        fd = open(lock_file, "a+")
         fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+        fd.seek(0)
+        fd.truncate()
         fd.write(str(os.getpid()))
         fd.flush()
-        yield fd
     except OSError as e:
-        raise LockAcquisitionError(f"Failed to acquire lock: {e}") from e
-    finally:
+        if acquired and fd:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
         if fd:
+            fd.close()
+        raise LockAcquisitionError(f"Failed to acquire lock: {e}") from e
+
+    try:
+        yield fd
+    finally:
+        if acquired and fd:
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
             fd.close()
-            with contextlib.suppress(OSError):
-                lock_path.unlink()

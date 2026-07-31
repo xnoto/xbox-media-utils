@@ -40,6 +40,7 @@ src/xbox_media_utils/
 ```
 
 **Key principle**:
+
 - Shared logic in modules (`api/`, `core/`, `media.py`, etc.)
 - CLI-specific code isolated in `cli/` package
 - Entry points configured in `pyproject.toml`
@@ -91,11 +92,7 @@ pgsrip can hang on corrupted PGS streams. We use SIGALRM for 10-minute timeout. 
 
 ### Lock Files
 
-`xbox-recode` uses `/var/run/xbox-recode.lock` to prevent concurrent runs. If a run crashes, the lock may stale. Manually delete it:
-
-```bash
-sudo rm /var/run/xbox-recode.lock
-```
+`xbox-recode` uses `flock` on a configurable lock path (default `/var/run/xbox-recode.lock`) to prevent concurrent runs. The kernel releases the lock when the owning process exits, including after a crash. Never delete the pathname merely because it exists: deleting an actively locked file can let another process lock a new inode and run concurrently. If lock acquisition fails, inspect the owning process and configuration, then retry normally.
 
 ## Testing Strategy
 
@@ -110,6 +107,9 @@ uv run pytest tests/unit/test_locking.py -v
 
 # Run with coverage
 uv run pytest --cov=src/xbox_media_utils
+
+# Run the complete contributor checks
+uv run pre-commit run --all-files
 ```
 
 For manual integration testing:
@@ -117,7 +117,7 @@ For manual integration testing:
 ```bash
 # Build and test locally
 uv run xbox-recode --help
-uv run xbox-recode scan /path/to/test/media --dry-run
+uv run xbox-recode process /path/to/test/media --dry-run
 
 # Test specific scenarios
 # 1. MPEG-4 file (triggers VAAPI fallback)
@@ -149,6 +149,8 @@ uv run xbox-recode scan /path/to/test/media --dry-run
 
 ## Release Process
 
+Work on a feature branch; `main` is protected. Commit messages follow Conventional Commits. Run the configured lint, type, secret, dead-code, and test hooks locally before requesting review; GitHub does not currently enforce those status checks, so do not assume a pull request ran them.
+
 1. Tag with version: `git tag -a v0.2.0 -m "Add AV1 support"`
 2. Push tag: `git push origin v0.2.0`
 3. Done. No PyPI, no release notes, no artifacts.
@@ -162,7 +164,7 @@ uv tool install git+https://github.com/xnoto/xbox-media-utils.git@v0.2.0
 ## Dependencies to Watch
 
 - **pgsrip**: OCR library. If it breaks, subtitle extraction breaks.
-- **ffmpeg**: External dependency. VAAPI support varies by build.
+- **ffmpeg**: Default binaries are supplied through `static-ffmpeg`. VAAPI availability still depends on the selected binary and host drivers; do not assume the system `ffmpeg` is used.
 - **babelfish**: Language code handling. Rarely changes.
 
 ## Server Context
