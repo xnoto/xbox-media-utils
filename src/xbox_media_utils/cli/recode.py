@@ -97,6 +97,10 @@ def process_file(
         "scan_target": str(info.path.parent),
         "subtitles_extracted": [],
         "hdr10_copy": None,
+        "input_size_bytes": info.path.stat().st_size if info.path.exists() else None,
+        "output_size_bytes": None,
+        "space_saved_bytes": None,
+        "space_saved_percent": None,
         "error": None,
     }
 
@@ -317,6 +321,15 @@ def process_file(
         if output_path.exists():
             output_path.unlink()
         return result
+
+    input_size = info.path.stat().st_size
+    output_size = output_path.stat().st_size
+    result["input_size_bytes"] = input_size
+    result["output_size_bytes"] = output_size
+    result["space_saved_bytes"] = input_size - output_size
+    result["space_saved_percent"] = (
+        ((input_size - output_size) / input_size) * 100 if input_size else None
+    )
 
     # Safe file replacement
     try:
@@ -689,6 +702,15 @@ def main():
                             )
                         if result.get("error"):
                             log(f"      Error: {result['error']}", quiet)
+                        if result.get("space_saved_bytes") is not None:
+                            saved = result["space_saved_bytes"]
+                            percent = result.get("space_saved_percent")
+                            size_label = "saved" if saved >= 0 else "larger"
+                            log(
+                                f"      Size change: {abs(saved) / (1024**3):.2f} GiB "
+                                f"{size_label} ({percent:+.1f}%)",
+                                quiet,
+                            )
 
                 scan_ok = True
                 if (
