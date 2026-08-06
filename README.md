@@ -89,10 +89,11 @@ xbox-import Movie/ --no-plex-scan
 **What it does:**
 
 - Same processing as `recode` but copies instead of replacing
+- Places a standalone source file in its own same-named directory
 - Preserves directory structure
 - Sets ownership on destination
 - Creates parent directories as needed
-- After all files import successfully, triggers one partial Plex scan for the imported file or directory
+- After all files import successfully, triggers one partial Plex scan for the imported directory
 - Skips the automatic scan for dry runs, failed imports, or when `--no-plex-scan` is used
 
 ### xbox-plex-scan

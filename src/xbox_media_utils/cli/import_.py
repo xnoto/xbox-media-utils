@@ -406,7 +406,10 @@ def main():
     if source_is_dir:
         dest_base = library_path / args.source.name
     else:
-        dest_base = library_path
+        # Plex partial scans operate on directories, not individual media files.
+        # Give a standalone source file its own import directory so the completed
+        # import can be scanned without refreshing the entire library.
+        dest_base = library_path / args.source.stem
 
     files = collect_media_files(args.source, MEDIA_EXTENSIONS)
 
@@ -473,7 +476,7 @@ def main():
         if result["status"] == "success":
             print(f"    -> {result['action']}: {result['destination']}")
             success += 1
-            scan_target = dest_base if source_is_dir else Path(result["destination"])
+            scan_target = dest_base
         elif result["status"] == "would_import":
             print(f"    -> Would {result['action']}: {result['destination']}")
             if result.get("dovi_action"):
