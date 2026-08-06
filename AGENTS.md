@@ -86,6 +86,13 @@ def run_ffmpeg_with_fallback(info, output_path):
 
 If you see "VAAPI failed, falling back to software decode" in logs, this is working as intended.
 
+### Xbox Video Limits
+
+The media-app target is codec-specific: H.264 is supported through 1080p60, while HEVC Main/Main10
+and VP9 are supported through 4K60. H.264 above 1080p is converted to HEVC without reducing its
+resolution or frame rate when already within 4K60. Scaling or frame-rate limiting applies only above
+the 4K60 output envelope. Keep this distinct from the console's 4K/120 gaming output capability.
+
 ### OCR Timeouts
 
 pgsrip can hang on corrupted PGS streams. We use SIGALRM for 10-minute timeout. If OCR fails, the SUP file is kept as fallback (though Plex won't use it).

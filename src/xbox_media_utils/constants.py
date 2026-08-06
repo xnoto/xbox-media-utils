@@ -4,6 +4,17 @@
 # Reference: https://support.plex.tv/articles/203824396-what-media-formats-are-supported/
 COMPATIBLE_VIDEO_CODECS = {"h264", "hevc", "vp9"}
 
+# Xbox media-app decode limits. These are deliberately separate from the
+# console's 4K/120 gaming output capability.
+# Reference: https://learn.microsoft.com/en-us/windows/uwp/apps-for-xbox/supported-technologies
+H264_MAX_WIDTH = 1920
+H264_MAX_HEIGHT = 1080
+UHD_MAX_WIDTH = 3840
+UHD_MAX_HEIGHT = 2160
+XBOX_MAX_VIDEO_FPS = 60.0
+SUPPORTED_H264_PROFILES = {"baseline", "constrained baseline", "main", "high"}
+SUPPORTED_HEVC_PROFILES = {"main", "main 10"}
+
 # Audio codecs we normalize to AAC stereo for reliable Xbox/Plex playback.
 #
 # These are the concrete problem cases seen in the library so far:

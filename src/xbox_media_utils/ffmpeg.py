@@ -6,7 +6,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .media import ffmpeg_path, ffprobe_path, run_cmd
+from .constants import UHD_MAX_HEIGHT, UHD_MAX_WIDTH, XBOX_MAX_VIDEO_FPS
+from .media import (
+    exceeds_uhd_resolution,
+    exceeds_xbox_frame_rate,
+    ffmpeg_path,
+    ffprobe_path,
+    fits_oriented_resolution,
+    parse_frame_rate,
+    run_cmd,
+)
 from .models import MediaInfo
 
 # Encoding settings
@@ -25,6 +34,24 @@ DV_TO_SDR_FILTER = (
     "zscale=transfer=bt709:primaries=bt709:matrix=bt709,"
     "format=yuv420p"
 )
+
+
+def _xbox_video_filters(info: MediaInfo) -> list[str]:
+    """Build filters that cap video at the Xbox 4K60 media-app envelope."""
+    filters = []
+    if exceeds_uhd_resolution(info):
+        portrait = bool(
+            info.video_width and info.video_height and info.video_height > info.video_width
+        )
+        max_width = UHD_MAX_HEIGHT if portrait else UHD_MAX_WIDTH
+        max_height = UHD_MAX_WIDTH if portrait else UHD_MAX_HEIGHT
+        filters.append(
+            f"scale={max_width}:{max_height}:"
+            "force_original_aspect_ratio=decrease:force_divisible_by=2"
+        )
+    if exceeds_xbox_frame_rate(info):
+        filters.append(f"fps={XBOX_MAX_VIDEO_FPS:g}")
+    return filters
 
 
 def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
@@ -52,11 +79,12 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
 
     # Video handling
     if info.needs_video_recode:
+        xbox_filters = _xbox_video_filters(info)
         if is_dolby_vision:
             cmd.extend(
                 [
                     "-vf",
-                    DV_TO_SDR_FILTER,
+                    ",".join([DV_TO_SDR_FILTER, *xbox_filters]),
                     "-c:v",
                     "libx265",
                     "-crf",
@@ -89,6 +117,8 @@ def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True)
                 ]
             )
         else:
+            if xbox_filters:
+                cmd.extend(["-vf", ",".join(xbox_filters)])
             x265_params = ["hdr-opt=1", "repeat-headers=1"] if info.video_hdr else []
             cmd.extend(
                 [
@@ -218,7 +248,7 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_type",
+            "stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,pix_fmt",
             "-of",
             "json",
             str(output_path),
@@ -229,10 +259,60 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
         types = [s.get("codec_type") for s in streams]
         if "video" not in types:
             return False, "Output missing video stream"
-        if "audio" not in types and input_info.audio_tracks:
-            return False, "Output missing audio stream"
+        output_audio_count = types.count("audio")
+        if output_audio_count != len(input_info.audio_tracks):
+            return (
+                False,
+                f"Audio stream count mismatch: {len(input_info.audio_tracks)} vs "
+                f"{output_audio_count}",
+            )
+
+        video = next(s for s in streams if s.get("codec_type") == "video")
+        if input_info.needs_video_recode and video.get("codec_name") != "hevc":
+            return False, f"Expected HEVC output, got {video.get('codec_name') or 'unknown'}"
+
+        output_width = video.get("width")
+        output_height = video.get("height")
+        if input_info.video_width and input_info.video_height:
+            if exceeds_uhd_resolution(input_info):
+                if not fits_oriented_resolution(
+                    output_width,
+                    output_height,
+                    UHD_MAX_WIDTH,
+                    UHD_MAX_HEIGHT,
+                ):
+                    return False, f"Output still exceeds 4K: {output_width}x{output_height}"
+            elif (output_width, output_height) != (
+                input_info.video_width,
+                input_info.video_height,
+            ):
+                return (
+                    False,
+                    f"Resolution changed: {input_info.video_width}x{input_info.video_height} "
+                    f"-> {output_width}x{output_height}",
+                )
+
+        output_frame_rate = parse_frame_rate(video.get("avg_frame_rate")) or parse_frame_rate(
+            video.get("r_frame_rate")
+        )
+        if input_info.video_frame_rate and output_frame_rate:
+            expected_frame_rate = min(input_info.video_frame_rate, XBOX_MAX_VIDEO_FPS)
+            if abs(output_frame_rate - expected_frame_rate) > 0.1:
+                return (
+                    False,
+                    f"Frame rate mismatch: {input_info.video_frame_rate:.3f} -> "
+                    f"{output_frame_rate:.3f}",
+                )
+
+        if (
+            input_info.video_hdr
+            and input_info.video_bit_depth
+            and input_info.video_bit_depth >= 10
+            and "10" not in (video.get("pix_fmt") or "")
+        ):
+            return False, f"HDR output lost 10-bit pixel format: {video.get('pix_fmt')}"
     except (json.JSONDecodeError, ValueError):
-        pass
+        return False, "Could not parse output stream metadata"
 
     return True, "OK"
 

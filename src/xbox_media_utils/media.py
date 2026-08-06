@@ -9,8 +9,15 @@ from typing import Optional
 from .constants import (
     AUDIO_CODECS_REQUIRING_RECODE,
     COMPATIBLE_VIDEO_CODECS,
+    H264_MAX_HEIGHT,
+    H264_MAX_WIDTH,
     IMAGE_SUBTITLE_CODECS,
+    SUPPORTED_H264_PROFILES,
+    SUPPORTED_HEVC_PROFILES,
     TEXT_SUBTITLE_CODECS,
+    UHD_MAX_HEIGHT,
+    UHD_MAX_WIDTH,
+    XBOX_MAX_VIDEO_FPS,
 )
 from .models import AudioTrack, MediaInfo, SubtitleTrack
 
@@ -40,6 +47,54 @@ def ffprobe_path() -> str:
 def run_cmd(cmd: list[str], capture: bool = True) -> subprocess.CompletedProcess:
     """Run a command and return result."""
     return subprocess.run(cmd, capture_output=capture, text=True)
+
+
+def parse_frame_rate(value: Optional[str]) -> Optional[float]:
+    """Parse an ffprobe frame-rate fraction such as ``24000/1001``."""
+    if not value or value in {"0/0", "N/A"}:
+        return None
+    try:
+        numerator, denominator = value.split("/", 1)
+        denominator_value = float(denominator)
+        if denominator_value == 0:
+            return None
+        return float(numerator) / denominator_value
+    except (TypeError, ValueError):
+        return None
+
+
+def fits_oriented_resolution(
+    width: Optional[int],
+    height: Optional[int],
+    max_width: int,
+    max_height: int,
+) -> bool:
+    """Return whether dimensions fit a landscape limit in either orientation."""
+    if not width or not height:
+        return True
+    return max(width, height) <= max_width and min(width, height) <= max_height
+
+
+def exceeds_uhd_resolution(info: MediaInfo) -> bool:
+    """Return whether a video exceeds the Xbox 4K media-app limit."""
+    return not fits_oriented_resolution(
+        info.video_width,
+        info.video_height,
+        UHD_MAX_WIDTH,
+        UHD_MAX_HEIGHT,
+    )
+
+
+def exceeds_xbox_frame_rate(info: MediaInfo) -> bool:
+    """Return whether a video exceeds the Xbox media-app frame-rate limit."""
+    return bool(info.video_frame_rate and info.video_frame_rate > XBOX_MAX_VIDEO_FPS + 0.01)
+
+
+def has_unsupported_chroma(info: MediaInfo) -> bool:
+    """Return whether a known pixel format is outside Main/Main10 4:2:0."""
+    if not info.video_pixel_format:
+        return False
+    return "422" in info.video_pixel_format or "444" in info.video_pixel_format
 
 
 def detect_dovi_profile(filepath: Path) -> Optional[int]:
@@ -123,14 +178,24 @@ def probe_file(filepath: Path) -> MediaInfo:
     for stream in streams:
         if stream.get("codec_type") == "video":
             info.video_codec = stream.get("codec_name", "").lower()
+            info.video_profile = (stream.get("profile") or "").lower() or None
+            info.video_pixel_format = stream.get("pix_fmt") or None
+            info.video_width = stream.get("width")
+            info.video_height = stream.get("height")
+            info.video_frame_rate = parse_frame_rate(
+                stream.get("avg_frame_rate")
+            ) or parse_frame_rate(stream.get("r_frame_rate"))
 
             # Bit depth detection
             pix_fmt = stream.get("pix_fmt", "")
-            if "10le" in pix_fmt or "10be" in pix_fmt or "p010" in pix_fmt:
+            bits_per_raw_sample = stream.get("bits_per_raw_sample")
+            if bits_per_raw_sample and str(bits_per_raw_sample).isdigit():
+                info.video_bit_depth = int(bits_per_raw_sample)
+            elif "10le" in pix_fmt or "10be" in pix_fmt or "p010" in pix_fmt:
                 info.video_bit_depth = 10
             elif "12le" in pix_fmt or "12be" in pix_fmt:
                 info.video_bit_depth = 12
-            else:
+            elif pix_fmt:
                 info.video_bit_depth = 8
 
             # HDR detection
@@ -234,6 +299,53 @@ def analyze_recode_needs(info: MediaInfo) -> None:
     elif info.video_codec and info.video_codec not in COMPATIBLE_VIDEO_CODECS:
         info.needs_video_recode = True
         info.video_recode_reason = f"incompatible codec: {info.video_codec}"
+    elif info.video_codec == "h264" and (
+        not fits_oriented_resolution(
+            info.video_width,
+            info.video_height,
+            H264_MAX_WIDTH,
+            H264_MAX_HEIGHT,
+        )
+        or exceeds_xbox_frame_rate(info)
+        or (info.video_profile is not None and info.video_profile not in SUPPORTED_H264_PROFILES)
+        or bool(info.video_bit_depth and info.video_bit_depth > 8)
+        or has_unsupported_chroma(info)
+    ):
+        details = []
+        if not fits_oriented_resolution(
+            info.video_width,
+            info.video_height,
+            H264_MAX_WIDTH,
+            H264_MAX_HEIGHT,
+        ):
+            details.append(f"{info.video_width}x{info.video_height}")
+        if exceeds_xbox_frame_rate(info):
+            details.append(f"{info.video_frame_rate:.3f} fps")
+        if info.video_profile and info.video_profile not in SUPPORTED_H264_PROFILES:
+            details.append(f"{info.video_profile} profile")
+        if info.video_bit_depth and info.video_bit_depth > 8:
+            details.append(f"{info.video_bit_depth}-bit")
+        if has_unsupported_chroma(info):
+            details.append(info.video_pixel_format or "unsupported chroma")
+        info.needs_video_recode = True
+        info.video_recode_reason = f"H.264 {'/'.join(details)} exceeds Xbox H.264 1080p60 support"
+    elif info.video_codec == "hevc" and (
+        exceeds_uhd_resolution(info)
+        or exceeds_xbox_frame_rate(info)
+        or (info.video_profile is not None and info.video_profile not in SUPPORTED_HEVC_PROFILES)
+        or bool(info.video_bit_depth and info.video_bit_depth > 10)
+        or has_unsupported_chroma(info)
+    ):
+        info.needs_video_recode = True
+        info.video_recode_reason = "HEVC exceeds Xbox Main/Main10 4K60 support"
+    elif info.video_codec == "vp9" and (
+        exceeds_uhd_resolution(info)
+        or exceeds_xbox_frame_rate(info)
+        or bool(info.video_bit_depth and info.video_bit_depth > 10)
+        or has_unsupported_chroma(info)
+    ):
+        info.needs_video_recode = True
+        info.video_recode_reason = "VP9 exceeds Xbox 4K60 support"
     elif info.video_bit_depth and info.video_bit_depth >= 10 and not info.video_hdr:
         # 10-bit SDR HEVC (BT.709) crashes the Plex Xbox client on direct-play.
         # The Xbox HEVC HW decoder handles 10-bit fine for HDR content (BT.2020/PQ),
@@ -289,6 +401,10 @@ def can_use_vaapi(info: MediaInfo, use_hardware: bool = True) -> bool:
     if not use_hardware or not info.needs_video_recode:
         return False
     if info.video_hdr_type == "dolby vision":
+        return False
+    # Scaling and frame-rate limiting use software filters. Keeping them off the
+    # VAAPI path also avoids feeding hardware frames through CPU-only filters.
+    if exceeds_uhd_resolution(info) or exceeds_xbox_frame_rate(info):
         return False
     # VAAPI cannot encode 10-bit (Radeon VII only supports HEVC Main/8-bit)
     if info.video_bit_depth and info.video_bit_depth > 8:

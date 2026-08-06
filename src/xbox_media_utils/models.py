@@ -39,7 +39,12 @@ class MediaInfo:
 
     path: Path
     video_codec: Optional[str] = None
+    video_profile: Optional[str] = None
+    video_pixel_format: Optional[str] = None
     video_bit_depth: Optional[int] = None
+    video_width: Optional[int] = None
+    video_height: Optional[int] = None
+    video_frame_rate: Optional[float] = None
     video_hdr: bool = False
     video_hdr_type: Optional[str] = None
     audio_tracks: list = field(default_factory=list)

@@ -61,8 +61,11 @@ xbox-recode process /path/to/library --no-plex-scan
 
 **What it does:**
 
-- Video: Pass-through H.264/HEVC unless Dolby Vision is present; transcode others to HEVC via VAAPI
-  (with MPEG-4 fallback)
+- Video: Pass through H.264 through 1080p60 and HEVC/VP9 through 4K60 when their profiles and bit
+  depths are Xbox-compatible; transcode other video to HEVC
+- Converts H.264 above 1080p to HEVC while preserving its resolution and frame rate when they are
+  already within 4K60; only video above 4K or 60 fps is reduced to the 4K60 media-app limit
+- Uses VAAPI where supported, with software fallback for MPEG-4 and filtered/10-bit conversions
 - Audio: Copy already-compatible AAC stereo; recode non-AAC stereo, all mono tracks, and all >2ch tracks to AAC 256k stereo
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
 - Dolby Vision: For DoVi Profile 8, create an HDR10-only copy, promote/process it as the main `.mkv`, and archive the original outside the Plex library under the DoVi backup root
