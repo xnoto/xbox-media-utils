@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from xbox_media_utils.api import PlexError, PlexScanner
 from xbox_media_utils.cli.common import (
     add_dry_run_argument,
     add_no_hardware_argument,
@@ -53,6 +54,18 @@ def log(msg: str, quiet: bool = False) -> None:
     """Print message unless in quiet mode."""
     if not quiet:
         print(msg, flush=True)
+
+
+def trigger_plex_scan(target: Path, quiet: bool = False) -> bool:
+    """Trigger a partial Plex scan for a successfully processed path."""
+    try:
+        result = PlexScanner().scan_path(target)
+    except PlexError as e:
+        print(f"  [plex_scan] {e}", file=sys.stderr)
+        return False
+
+    log(f"  [plex_scan] {result['message']}", quiet)
+    return bool(result["success"])
 
 
 def process_file(
@@ -469,6 +482,11 @@ def main():
     process_parser.add_argument("--file", action="store_true", help="Single file only")
     process_parser.add_argument("--plex", type=str, default=None, help="Plex root path")
     process_parser.add_argument("--dovi-backup", type=str, default=None, help="DoVi backup root")
+    process_parser.add_argument(
+        "--no-plex-scan",
+        action="store_true",
+        help="Do not trigger a Plex scan after successful processing",
+    )
     add_dry_run_argument(process_parser)
     add_quiet_argument(process_parser)
     add_no_hardware_argument(process_parser)
@@ -547,6 +565,8 @@ def main():
                 log(f"\nProcessing {len(to_process)} files...", quiet)
 
                 failed_count = 0
+                successful_count = 0
+                all_succeeded = True
                 for info in to_process:
                     result = process_file(
                         info,
@@ -558,6 +578,11 @@ def main():
                         process_dovi_backup=process_dovi_backup,
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
+                    if result["status"] == "success":
+                        successful_count += 1
+                    else:
+                        all_succeeded = False
+
                     if result["status"] == "failed":
                         failed_count += 1
 
@@ -594,7 +619,20 @@ def main():
                         log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
                         if result.get("error"):
                             log(f"      Error: {result['error']}", quiet)
-                if failed_count:
+
+                scan_ok = True
+                if (
+                    args.command == "process"
+                    and successful_count > 0
+                    and all_succeeded
+                    and not args.dry_run
+                    and not args.no_plex_scan
+                ):
+                    scan_target = args.path.parent if args.path.is_file() else args.path
+                    log(f"Triggering Plex scan for: {scan_target}", quiet)
+                    scan_ok = trigger_plex_scan(scan_target, quiet)
+
+                if failed_count or not scan_ok:
                     sys.exit(1)
         except LockAcquisitionError as e:
             print(f"Error: {e}", file=sys.stderr)

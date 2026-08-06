@@ -1,8 +1,51 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from xbox_media_utils.api import PlexError
 from xbox_media_utils.cli import recode
 from xbox_media_utils.models import AudioTrack, MediaInfo, SubtitleTrack
+
+
+class NullLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
+
+@pytest.mark.parametrize(("scanner_success", "expected"), [(True, True), (False, False)])
+def test_trigger_plex_scan_returns_scanner_result(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    scanner_success,
+    expected,
+):
+    target = tmp_path / "movies" / "Movie"
+
+    class FakeScanner:
+        def scan_path(self, path):
+            assert path == target
+            return {"success": scanner_success, "message": "scan requested"}
+
+    monkeypatch.setattr(recode, "PlexScanner", FakeScanner)
+
+    assert recode.trigger_plex_scan(target) is expected
+    assert "[plex_scan] scan requested" in capsys.readouterr().out
+
+
+def test_trigger_plex_scan_handles_plex_errors(tmp_path: Path, monkeypatch, capsys):
+    class FakeScanner:
+        def scan_path(self, path):
+            raise PlexError("Plex unavailable")
+
+    monkeypatch.setattr(recode, "PlexScanner", FakeScanner)
+
+    assert recode.trigger_plex_scan(tmp_path) is False
+    assert "[plex_scan] Plex unavailable" in capsys.readouterr().err
 
 
 def test_process_file_sets_ownership_for_extracted_subtitles(tmp_path: Path, monkeypatch):
@@ -281,3 +324,145 @@ def test_scan_dovi_backups_includes_only_dv_mkv_files(tmp_path: Path, monkeypatc
     results = recode.scan_dovi_backups(backup, quiet=True)
 
     assert [result.path for result in results] == [dv_path]
+
+
+def configure_process_main(monkeypatch, results: list[MediaInfo]) -> None:
+    monkeypatch.setattr(recode, "acquire_lock", lambda path: NullLock())
+    monkeypatch.setattr(recode, "scan_directory", lambda path, quiet: results)
+    monkeypatch.setattr(recode, "write_log_entry", lambda *args, **kwargs: None)
+
+
+def test_main_scans_successful_process_target(tmp_path: Path, monkeypatch):
+    target = tmp_path / "movies" / "Movie"
+    target.mkdir(parents=True)
+    info = MediaInfo(path=target / "movie.mkv", needs_video_recode=True)
+    configure_process_main(monkeypatch, [info])
+    monkeypatch.setattr(
+        recode,
+        "process_file",
+        lambda *args, **kwargs: {"status": "success", "error": None},
+    )
+
+    scan_calls = []
+
+    def fake_trigger_plex_scan(path, quiet=False):
+        scan_calls.append(path)
+        return True
+
+    monkeypatch.setattr(recode, "trigger_plex_scan", fake_trigger_plex_scan)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--plex", str(tmp_path)],
+    )
+
+    recode.main()
+
+    assert scan_calls == [target]
+
+
+def test_main_scans_parent_for_successful_file_and_propagates_failure(tmp_path: Path, monkeypatch):
+    target = tmp_path / "movies" / "Movie" / "movie.mkv"
+    target.parent.mkdir(parents=True)
+    target.write_text("input")
+    info = MediaInfo(path=target, needs_video_recode=True)
+    monkeypatch.setattr(recode, "acquire_lock", lambda path: NullLock())
+    monkeypatch.setattr(recode, "probe_file", lambda path: info)
+    monkeypatch.setattr(recode, "write_log_entry", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        recode,
+        "process_file",
+        lambda *args, **kwargs: {"status": "success", "error": None},
+    )
+
+    scan_calls = []
+
+    def fake_trigger_plex_scan(path, quiet=False):
+        scan_calls.append(path)
+        return False
+
+    monkeypatch.setattr(recode, "trigger_plex_scan", fake_trigger_plex_scan)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--file", "--plex", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        recode.main()
+
+    assert exc_info.value.code == 1
+    assert scan_calls == [target.parent]
+
+
+def test_main_does_not_scan_after_partial_failure(tmp_path: Path, monkeypatch):
+    target = tmp_path / "movies" / "Movie"
+    target.mkdir(parents=True)
+    infos = [
+        MediaInfo(path=target / "part-1.mkv", needs_video_recode=True),
+        MediaInfo(path=target / "part-2.mkv", needs_video_recode=True),
+    ]
+    configure_process_main(monkeypatch, infos)
+
+    def fake_process_file(info, *args, **kwargs):
+        return {
+            "status": "success" if info is infos[0] else "failed",
+            "error": None if info is infos[0] else "recode failed",
+        }
+
+    monkeypatch.setattr(recode, "process_file", fake_process_file)
+    monkeypatch.setattr(
+        recode,
+        "trigger_plex_scan",
+        lambda path, quiet=False: pytest.fail(f"unexpected Plex scan for {path}"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--plex", str(tmp_path)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        recode.main()
+
+    assert exc_info.value.code == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "extra_args"),
+    [
+        ("would_process", ["--dry-run"]),
+        ("success", ["--no-plex-scan"]),
+        ("incompatible", []),
+    ],
+)
+def test_main_skips_scan_when_process_not_eligible(
+    tmp_path: Path,
+    monkeypatch,
+    status,
+    extra_args,
+):
+    target = tmp_path / "movies" / "Movie"
+    target.mkdir(parents=True)
+    info = MediaInfo(path=target / "movie.mkv", needs_video_recode=True)
+    configure_process_main(monkeypatch, [info])
+    monkeypatch.setattr(
+        recode,
+        "process_file",
+        lambda *args, **kwargs: {"status": status, "error": None},
+    )
+    monkeypatch.setattr(
+        recode,
+        "trigger_plex_scan",
+        lambda path, quiet=False: pytest.fail(f"unexpected Plex scan for {path}"),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "xbox-recode",
+            "process",
+            str(target),
+            "--plex",
+            str(tmp_path),
+            *extra_args,
+        ],
+    )
+
+    recode.main()
