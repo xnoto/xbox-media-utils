@@ -33,7 +33,12 @@ from xbox_media_utils.core import (
     write_log_entry,
 )
 from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
-from xbox_media_utils.files import collect_media_files, set_ownership
+from xbox_media_utils.files import (
+    collect_media_files,
+    get_root_media_destination,
+    organize_root_media,
+    set_ownership,
+)
 from xbox_media_utils.hdr import (
     archive_dovi_original,
     create_hdr10_copy,
@@ -87,10 +92,23 @@ def process_file(
         "audio_action": "copy",
         "subtitle_action": "none",
         "dovi_action": "none",
+        "organization_action": "none",
+        "organized_path": None,
+        "scan_target": str(info.path.parent),
         "subtitles_extracted": [],
         "hdr10_copy": None,
         "error": None,
     }
+
+    organization_destination = (
+        None
+        if process_dovi_backup or library_root is None
+        else get_root_media_destination(info.path, library_root)
+    )
+    organization_needed = organization_destination is not None
+    if organization_destination:
+        result["organization_action"] = f"move into {organization_destination.parent}"
+        result["organized_path"] = str(organization_destination)
 
     has_subs = has_extractable_subs(info)
     needs_hdr10 = False if process_dovi_backup else needs_hdr10_copy(info)
@@ -113,7 +131,8 @@ def process_file(
         result["error"] = info.incompatible_reason
         return result
 
-    if not needs_processing(processing_info) and not has_subs and not needs_hdr10:
+    media_processing_needed = needs_processing(processing_info) or has_subs or needs_hdr10
+    if not media_processing_needed and not organization_needed:
         result["status"] = "compatible"
         return result
 
@@ -144,6 +163,31 @@ def process_file(
 
     if dry_run:
         result["status"] = "would_process"
+        return result
+
+    if organization_needed and organization_destination and library_root:
+        log(f"  Organizing root-level media: {info.path.name}", quiet)
+        organized, organization_msg, organized_path, _ = organize_root_media(
+            info.path,
+            library_root,
+            MEDIA_EXTENSIONS,
+        )
+        if not organized:
+            result["status"] = "failed"
+            result["error"] = organization_msg
+            return result
+
+        info = replace(info, path=organized_path)
+        processing_info = replace(processing_info, path=organized_path)
+        result["path"] = str(info.path)
+        result["organized_path"] = str(info.path)
+        result["scan_target"] = str(info.path.parent)
+        set_ownership(info.path.parent, plex_user, plex_group)
+        log(f"    {organization_msg}", quiet)
+
+    if not media_processing_needed:
+        result["status"] = "success"
+        result["output_path"] = str(info.path)
         return result
 
     def set_output_ownership(path_str: str) -> None:
@@ -337,7 +381,7 @@ def process_file(
     return result
 
 
-def scan_directory(path: Path, quiet: bool = False) -> list:
+def scan_directory(path: Path, quiet: bool = False, library_root: Path | None = None) -> list:
     """Scan directory for media files."""
     files = collect_media_files(path, MEDIA_EXTENSIONS)
 
@@ -367,6 +411,8 @@ def scan_directory(path: Path, quiet: bool = False) -> list:
                 reasons.append(f"SUBS({'+'.join(sub_parts)})")
             if info.has_dovi_profile_8:
                 reasons.append("DOVI-P8")
+            if library_root and get_root_media_destination(info.path, library_root):
+                reasons.append("ORGANIZE")
             if reasons:
                 log(f"  -> {' '.join(reasons)}", quiet)
             else:
@@ -410,7 +456,9 @@ def scan_dovi_backups(path: Path, quiet: bool = False) -> list:
     return results
 
 
-def print_scan_summary(results: list, quiet: bool = False) -> None:
+def print_scan_summary(
+    results: list, quiet: bool = False, library_root: Path | None = None
+) -> None:
     """Print summary of scan results."""
     total = len(results)
     errors = sum(1 for r in results if r.probe_error)
@@ -418,9 +466,17 @@ def print_scan_summary(results: list, quiet: bool = False) -> None:
     needs_audio = sum(1 for r in results if r.needs_audio_recode)
     has_subs = sum(1 for r in results if has_extractable_subs(r))
     has_dovi_p8 = sum(1 for r in results if r.has_dovi_profile_8)
+    needs_organization = sum(
+        1 for r in results if library_root and get_root_media_destination(r.path, library_root)
+    )
     incompatible = sum(1 for r in results if r.incompatible_reason)
     needs_any = sum(
-        1 for r in results if needs_processing(r) or has_extractable_subs(r) or needs_hdr10_copy(r)
+        1
+        for r in results
+        if needs_processing(r)
+        or has_extractable_subs(r)
+        or needs_hdr10_copy(r)
+        or (library_root and get_root_media_destination(r.path, library_root))
     )
     compatible = total - needs_any - errors
 
@@ -434,6 +490,7 @@ def print_scan_summary(results: list, quiet: bool = False) -> None:
     log(f"  - Audio recode:      {needs_audio}", quiet)
     log(f"  - Subtitle extract:  {has_subs}", quiet)
     log(f"  - DoVi P8 HDR10:     {has_dovi_p8}", quiet)
+    log(f"  - Need organization: {needs_organization}", quiet)
     log(f"Incompatible (block):  {incompatible}", quiet)
     log(f"Probe errors:          {errors}", quiet)
     log("=" * 60, quiet)
@@ -528,8 +585,8 @@ def main():
     dovi_backup_root = get_dovi_backup_root(getattr(args, "dovi_backup", None), plex_root)
 
     if args.command == "scan":
-        results = scan_directory(args.path, quiet)
-        print_scan_summary(results, quiet)
+        results = scan_directory(args.path, quiet, plex_root)
+        print_scan_summary(results, quiet, plex_root)
 
     elif args.command == "incompat":
         results = scan_directory(args.path, quiet)
@@ -545,7 +602,7 @@ def main():
                 elif process_dovi_backup:
                     results = scan_dovi_backups(args.path, quiet)
                 else:
-                    results = scan_directory(args.path, quiet)
+                    results = scan_directory(args.path, quiet, plex_root)
 
                 if process_dovi_backup:
                     to_process = [
@@ -555,7 +612,10 @@ def main():
                     to_process = [
                         r
                         for r in results
-                        if needs_processing(r) or has_extractable_subs(r) or needs_hdr10_copy(r)
+                        if needs_processing(r)
+                        or has_extractable_subs(r)
+                        or needs_hdr10_copy(r)
+                        or get_root_media_destination(r.path, plex_root)
                     ]
 
                 if not to_process:
@@ -567,6 +627,8 @@ def main():
                 failed_count = 0
                 successful_count = 0
                 all_succeeded = True
+                target_was_file = args.path.is_file()
+                successful_scan_targets: set[Path] = set()
                 for info in to_process:
                     result = process_file(
                         info,
@@ -580,6 +642,9 @@ def main():
                     write_log_entry(result, LOG_DIR, prefix="recode")
                     if result["status"] == "success":
                         successful_count += 1
+                        successful_scan_targets.add(
+                            Path(result.get("scan_target", info.path.parent))
+                        )
                     else:
                         all_succeeded = False
 
@@ -617,6 +682,11 @@ def main():
                             else "○"
                         )
                         log(f"  {symbol} {info.path.name}: {result['status']}", quiet)
+                        if result.get("organization_action") not in (None, "none"):
+                            log(
+                                f"      Organization: {result['organization_action']}",
+                                quiet,
+                            )
                         if result.get("error"):
                             log(f"      Error: {result['error']}", quiet)
 
@@ -628,7 +698,11 @@ def main():
                     and not args.dry_run
                     and not args.no_plex_scan
                 ):
-                    scan_target = args.path.parent if args.path.is_file() else args.path
+                    scan_target = (
+                        next(iter(successful_scan_targets))
+                        if target_was_file and len(successful_scan_targets) == 1
+                        else args.path
+                    )
                     log(f"Triggering Plex scan for: {scan_target}", quiet)
                     scan_ok = trigger_plex_scan(scan_target, quiet)
 

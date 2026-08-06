@@ -107,6 +107,103 @@ def test_process_file_refuses_incompatible_format(tmp_path: Path):
     assert "Profile 5" in result["error"]
 
 
+def test_process_file_organizes_compatible_root_media_and_sidecar(tmp_path: Path, monkeypatch):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "movies"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Movie.2024.mkv"
+    subtitle_path = library_root / "Movie.2024.en.srt"
+    media_path.write_text("input")
+    subtitle_path.write_text("subtitle")
+    info = MediaInfo(path=media_path, video_codec="h264")
+
+    monkeypatch.setattr(recode, "set_ownership", lambda path, user, group: (True, None))
+
+    result = recode.process_file(info, library_root=plex_root)
+
+    destination_dir = library_root / "Movie.2024"
+    destination = destination_dir / media_path.name
+    assert result["status"] == "success"
+    assert result["organized_path"] == str(destination)
+    assert result["scan_target"] == str(destination_dir)
+    assert destination.read_text() == "input"
+    assert (destination_dir / subtitle_path.name).read_text() == "subtitle"
+    assert not media_path.exists()
+
+
+def test_process_file_dry_run_reports_organization_without_moving(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "movies"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Movie.2024.mkv"
+    media_path.write_text("input")
+    info = MediaInfo(path=media_path, video_codec="h264")
+
+    result = recode.process_file(info, library_root=plex_root, dry_run=True)
+
+    assert result["status"] == "would_process"
+    assert result["organization_action"] == f"move into {library_root / 'Movie.2024'}"
+    assert media_path.exists()
+    assert not (library_root / "Movie.2024").exists()
+
+
+def test_process_file_recodes_from_organized_path(tmp_path: Path, monkeypatch):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "movies"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Movie.2024.mkv"
+    media_path.write_text("10-bit input")
+    destination_dir = library_root / "Movie.2024"
+    destination = destination_dir / media_path.name
+    info = MediaInfo(
+        path=media_path,
+        video_codec="hevc",
+        needs_video_recode=True,
+        video_recode_reason="10-bit SDR hevc crashes Plex on Xbox",
+    )
+
+    def fake_run_ffmpeg_with_fallback(processing_info, output, use_hardware):
+        assert processing_info.path == destination
+        output.write_text("recode output")
+        return True, ""
+
+    monkeypatch.setattr(recode, "run_ffmpeg_with_fallback", fake_run_ffmpeg_with_fallback)
+    monkeypatch.setattr(recode, "validate_output", lambda info, path: (True, "OK"))
+    monkeypatch.setattr(recode, "set_ownership", lambda path, user, group: (True, None))
+
+    result = recode.process_file(info, library_root=plex_root)
+
+    assert result["status"] == "success"
+    assert result["output_path"] == str(destination)
+    assert destination.read_text() == "recode output"
+    assert not media_path.exists()
+    assert not destination.with_suffix(".xbox.mkv").exists()
+
+
+def test_process_file_does_not_organize_dovi_backup(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    backup_root = plex_root / "backup"
+    backup_root.mkdir(parents=True)
+    media_path = backup_root / "Movie.DV.mkv"
+    media_path.write_text("input")
+    info = MediaInfo(
+        path=media_path,
+        video_codec="hevc",
+        audio_tracks=[AudioTrack(index=1, codec="dts", channels=6, needs_recode=True)],
+    )
+
+    result = recode.process_file(
+        info,
+        library_root=plex_root,
+        process_dovi_backup=True,
+        dry_run=True,
+    )
+
+    assert result["status"] == "would_process"
+    assert result["organization_action"] == "none"
+    assert media_path.exists()
+
+
 def test_write_incompatible_report_lists_only_blocked_files(tmp_path: Path):
     blocked = MediaInfo(
         path=Path("/lib/Show.S01E01.mkv"),
@@ -328,7 +425,7 @@ def test_scan_dovi_backups_includes_only_dv_mkv_files(tmp_path: Path, monkeypatc
 
 def configure_process_main(monkeypatch, results: list[MediaInfo]) -> None:
     monkeypatch.setattr(recode, "acquire_lock", lambda path: NullLock())
-    monkeypatch.setattr(recode, "scan_directory", lambda path, quiet: results)
+    monkeypatch.setattr(recode, "scan_directory", lambda path, quiet, library_root=None: results)
     monkeypatch.setattr(recode, "write_log_entry", lambda *args, **kwargs: None)
 
 
@@ -391,6 +488,48 @@ def test_main_scans_parent_for_successful_file_and_propagates_failure(tmp_path: 
 
     assert exc_info.value.code == 1
     assert scan_calls == [target.parent]
+
+
+def test_main_scans_new_directory_for_organized_single_file(tmp_path: Path, monkeypatch):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "movies"
+    library_root.mkdir(parents=True)
+    target = library_root / "Movie.2024.mkv"
+    target.write_text("input")
+    info = MediaInfo(path=target, video_codec="h264")
+    destination_dir = library_root / target.stem
+
+    monkeypatch.setattr(recode, "acquire_lock", lambda path: NullLock())
+    monkeypatch.setattr(recode, "probe_file", lambda path: info)
+    monkeypatch.setattr(recode, "write_log_entry", lambda *args, **kwargs: None)
+    process_calls = []
+
+    def fake_process_file(info_arg, *args, **kwargs):
+        process_calls.append(info_arg.path)
+        return {
+            "status": "success",
+            "error": None,
+            "organization_action": f"move into {destination_dir}",
+            "scan_target": str(destination_dir),
+        }
+
+    monkeypatch.setattr(recode, "process_file", fake_process_file)
+    scan_calls = []
+
+    def fake_trigger_plex_scan(path, quiet=False):
+        scan_calls.append(path)
+        return True
+
+    monkeypatch.setattr(recode, "trigger_plex_scan", fake_trigger_plex_scan)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--file", "--plex", str(plex_root)],
+    )
+
+    recode.main()
+
+    assert process_calls == [target]
+    assert scan_calls == [destination_dir]
 
 
 def test_main_does_not_scan_after_partial_failure(tmp_path: Path, monkeypatch):

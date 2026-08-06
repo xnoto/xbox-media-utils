@@ -100,6 +100,11 @@ command exit nonzero even though the imported files remain in place.
 targets scan that directory, while single-file targets scan their parent directory. Archived DoVi
 backup processing does not trigger Plex scans.
 
+Media files directly under `<plex-root>/<library>/` are out of conformance. `xbox-recode process`
+moves those files and attributable same-stem sidecars into `<library>/<media-stem>/` before media
+processing. Dry runs report the move without changing files, collisions fail without overwriting,
+and `process-backups` never reorganizes archive content.
+
 ### Lock Files
 
 `xbox-recode` uses `flock` on a configurable lock path (default `/var/run/xbox-recode.lock`) to prevent concurrent runs. The kernel releases the lock when the owning process exits, including after a crash. Never delete the pathname merely because it exists: deleting an actively locked file can let another process lock a new inode and run concurrently. If lock acquisition fails, inspect the owning process and configuration, then retry normally.
