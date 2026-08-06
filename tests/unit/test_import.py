@@ -198,13 +198,16 @@ def test_main_scans_imported_directory_after_success(tmp_path: Path, monkeypatch
     assert scan_calls == [library_path / source.name]
 
 
-def test_main_scans_single_imported_file_and_propagates_failure(tmp_path: Path, monkeypatch):
+def test_main_places_and_scans_single_file_in_own_directory_and_propagates_failure(
+    tmp_path: Path, monkeypatch
+):
     source = tmp_path / "movie.mkv"
     source.write_text("input")
     plex_root = tmp_path / "plex"
     library_path = plex_root / "movies"
     library_path.mkdir(parents=True)
-    destination = library_path / source.name
+    destination_dir = library_path / source.stem
+    destination = destination_dir / source.name
 
     monkeypatch.setattr(
         sys,
@@ -219,15 +222,17 @@ def test_main_scans_single_imported_file_and_propagates_failure(tmp_path: Path, 
         ],
     )
     monkeypatch.setattr(import_cli, "probe_file", lambda path: MediaInfo(path=path))
-    monkeypatch.setattr(
-        import_cli,
-        "import_file",
-        lambda *args, **kwargs: {
+    import_destinations = []
+
+    def fake_import_file(info, dest_dir, *args, **kwargs):
+        import_destinations.append(dest_dir)
+        return {
             "status": "success",
             "action": "copy",
             "destination": str(destination),
-        },
-    )
+        }
+
+    monkeypatch.setattr(import_cli, "import_file", fake_import_file)
     monkeypatch.setattr(import_cli, "write_log_entry", lambda *args, **kwargs: None)
 
     scan_calls = []
@@ -242,7 +247,8 @@ def test_main_scans_single_imported_file_and_propagates_failure(tmp_path: Path, 
         import_cli.main()
 
     assert exc_info.value.code == 1
-    assert scan_calls == [destination]
+    assert import_destinations == [destination_dir]
+    assert scan_calls == [destination_dir]
 
 
 def test_main_does_not_scan_after_partial_failure(tmp_path: Path, monkeypatch):
