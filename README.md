@@ -30,7 +30,7 @@ Update: `uv tool upgrade xbox-media-utils`
 
 ### xbox-recode
 
-In-place processor for existing libraries.
+Conformance processor for existing libraries.
 
 ```bash
 # Scan what needs processing
@@ -66,8 +66,9 @@ xbox-recode process /path/to/library --no-plex-scan
 - Audio: Copy already-compatible AAC stereo; recode non-AAC stereo, all mono tracks, and all >2ch tracks to AAC 256k stereo
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
 - Dolby Vision: For DoVi Profile 8, create an HDR10-only copy, promote/process it as the main `.mkv`, and archive the original outside the Plex library under the DoVi backup root
+- Organization: Move media directly under a library root, plus attributable sidecars, into a same-named directory
 - Replaces originals after validation
-- After all target files process successfully, triggers one partial Plex scan for the target directory
+- After all target files process successfully, triggers one partial Plex scan for the target directory; organized single-file targets scan their new directory
 - Skips the automatic scan for dry runs, failed processing, or when `--no-plex-scan` is used
 
 ### xbox-import
