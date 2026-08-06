@@ -54,6 +54,9 @@ xbox-recode process /path/to/library --dry-run
 
 # Software only (no VAAPI)
 xbox-recode process /path/to/library --no-hardware
+
+# Process without triggering a Plex scan
+xbox-recode process /path/to/library --no-plex-scan
 ```
 
 **What it does:**
@@ -64,6 +67,8 @@ xbox-recode process /path/to/library --no-hardware
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
 - Dolby Vision: For DoVi Profile 8, create an HDR10-only copy, promote/process it as the main `.mkv`, and archive the original outside the Plex library under the DoVi backup root
 - Replaces originals after validation
+- After all target files process successfully, triggers one partial Plex scan for the target directory
+- Skips the automatic scan for dry runs, failed processing, or when `--no-plex-scan` is used
 
 ### xbox-import
 

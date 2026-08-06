@@ -90,11 +90,15 @@ If you see "VAAPI failed, falling back to software decode" in logs, this is work
 
 pgsrip can hang on corrupted PGS streams. We use SIGALRM for 10-minute timeout. If OCR fails, the SUP file is kept as fallback (though Plex won't use it).
 
-### Post-Import Plex Scans
+### Post-Processing Plex Scans
 
 `xbox-import` triggers one partial Plex scan after all files import successfully. It does not scan
 after a failed import or dry run, and `--no-plex-scan` disables the behavior. A failed scan makes the
 command exit nonzero even though the imported files remain in place.
+
+`xbox-recode process` follows the same rules after successfully processing its target. Directory
+targets scan that directory, while single-file targets scan their parent directory. Archived DoVi
+backup processing does not trigger Plex scans.
 
 ### Lock Files
 
