@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from xbox_media_utils.ffmpeg import (
     _is_vaapi_error,
     build_ffmpeg_cmd,
+    run_ffmpeg_command,
     run_ffmpeg_with_fallback,
     validate_output,
 )
@@ -304,3 +306,24 @@ def test_run_ffmpeg_with_fallback_retries_vaapi_device_init_failure(monkeypatch,
     assert len(calls) == 2
     assert "hevc_vaapi" in calls[0]
     assert "libx265" in calls[1]
+
+
+def test_run_ffmpeg_command_pauses_and_resumes_for_plex_transcode(monkeypatch):
+    readings = iter([1, 0, 0])
+    monkeypatch.setattr(
+        "xbox_media_utils.ffmpeg.count_active_plex_transcodes",
+        lambda: next(readings, 0),
+    )
+    messages = []
+
+    result = run_ffmpeg_command(
+        [sys.executable, "-c", "import time; time.sleep(0.2); print('done')"],
+        pause_for_plex=True,
+        plex_poll_seconds=0.01,
+        logger=messages.append,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "done"
+    assert any("Paused recode" in message for message in messages)
+    assert any("Resumed recode" in message for message in messages)

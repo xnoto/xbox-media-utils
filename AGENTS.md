@@ -116,6 +116,16 @@ and `process-backups` never reorganizes archive content.
 
 `xbox-recode` uses `flock` on a configurable lock path (default `/var/run/xbox-recode.lock`) to prevent concurrent runs. The kernel releases the lock when the owning process exits, including after a crash. Never delete the pathname merely because it exists: deleting an actively locked file can let another process lock a new inode and run concurrently. If lock acquisition fails, inspect the owning process and configuration, then retry normally.
 
+### Long-Running Library Recodes
+
+Use the packaged `xbox-recode-library@.service` template for multi-day processing, with only one of
+`movies`, `tv`, or `other` active at a time. The service waits for idle Plex transcoding and ROCm
+compute/VRAM between files, pauses an active FFmpeg process if a Plex transcode begins, and otherwise
+runs with reduced CPU/I/O priority. `xbox-recode status --json` is the agent-facing progress
+interface. Do not process `/mnt/jbod/plex` as one root because it includes the separately managed
+`backup` tree. After interruption, allow artifact recovery to reconcile `.xbox.mkv` and `.bak` files
+while holding the normal recode lock.
+
 ## Testing Strategy
 
 Unit tests exist for core modules. Run with pytest:

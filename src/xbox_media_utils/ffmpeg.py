@@ -1,12 +1,17 @@
 """FFmpeg command building and execution utilities."""
 
 import json
+import os
+import signal
 import subprocess
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from .constants import UHD_MAX_HEIGHT, UHD_MAX_WIDTH, XBOX_MAX_VIDEO_FPS
+from .core.plex_activity import PlexStatusError, count_active_plex_transcodes
 from .media import (
     exceeds_uhd_resolution,
     exceeds_xbox_frame_rate,
@@ -54,7 +59,77 @@ def _xbox_video_filters(info: MediaInfo) -> list[str]:
     return filters
 
 
-def build_ffmpeg_cmd(info: MediaInfo, output_path: Path, use_vaapi: bool = True) -> list[str]:
+def run_ffmpeg_command(
+    cmd: list[str],
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
+    logger=print,
+) -> subprocess.CompletedProcess:
+    """Run FFmpeg, pausing its process group while Plex is transcoding."""
+    if not pause_for_plex:
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    with (
+        tempfile.TemporaryFile(mode="w+") as stdout_file,
+        tempfile.TemporaryFile(mode="w+") as stderr_file,
+    ):
+        process = subprocess.Popen(
+            cmd,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            text=True,
+            start_new_session=True,
+        )
+        paused = False
+        try:
+            while process.poll() is None:
+                try:
+                    active_transcodes = count_active_plex_transcodes()
+                except PlexStatusError as e:
+                    # Fail closed: stop disk-intensive work until process
+                    # inspection succeeds again.
+                    active_transcodes = 1
+                    logger(f"Could not inspect Plex activity; pausing recode: {e}")
+
+                if active_transcodes and not paused:
+                    try:
+                        os.killpg(process.pid, signal.SIGSTOP)
+                        paused = True
+                        logger(f"Paused recode for {active_transcodes} active Plex transcode(s)")
+                    except ProcessLookupError:
+                        break
+                elif not active_transcodes and paused:
+                    try:
+                        os.killpg(process.pid, signal.SIGCONT)
+                        paused = False
+                        logger("Resumed recode after Plex transcodes completed")
+                    except ProcessLookupError:
+                        break
+
+                time.sleep(plex_poll_seconds)
+        finally:
+            if paused and process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+
+        returncode = process.wait()
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            stdout=stdout_file.read(),
+            stderr=stderr_file.read(),
+        )
+
+
+def build_ffmpeg_cmd(
+    info: MediaInfo,
+    output_path: Path,
+    use_vaapi: bool = True,
+) -> list[str]:
     """Build ffmpeg command for transcoding."""
     cmd = [ffmpeg_path()]
     is_dolby_vision = info.video_hdr_type == "dolby vision"
@@ -339,7 +414,11 @@ def _is_vaapi_error(stderr: Optional[str]) -> bool:
 
 
 def run_ffmpeg_with_fallback(
-    info: MediaInfo, output_path: Path, use_hardware: bool = True
+    info: MediaInfo,
+    output_path: Path,
+    use_hardware: bool = True,
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
 ) -> tuple[bool, str]:
     """Run ffmpeg with VAAPI hardware acceleration, falling back to software if needed.
 
@@ -356,7 +435,11 @@ def run_ffmpeg_with_fallback(
     if use_vaapi:
         print("  Attempting VAAPI hardware transcode...")
         cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=True)
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = run_ffmpeg_command(
+            cmd,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+        )
 
         if proc.returncode == 0:
             return True, ""
@@ -373,7 +456,11 @@ def run_ffmpeg_with_fallback(
     # Second attempt: software decode/encode (no hwaccel)
     print("  Using software transcode...")
     cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=False)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = run_ffmpeg_command(
+        cmd,
+        pause_for_plex=pause_for_plex,
+        plex_poll_seconds=plex_poll_seconds,
+    )
 
     if proc.returncode == 0:
         return True, ""

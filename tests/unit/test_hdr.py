@@ -63,13 +63,13 @@ def test_create_hdr10_copy_strips_dovi_rpu_with_dovi_bsf(tmp_path: Path, monkeyp
     info = MediaInfo(path=source, has_dovi_profile_8=True)
     captured_cmd = []
 
-    def fake_run_cmd(cmd):
+    def fake_run_cmd(cmd, **kwargs):
         captured_cmd.extend(cmd)
         Path(cmd[-1]).write_bytes(b"y" * 95)
         return SimpleNamespace(returncode=0, stderr="")
 
     monkeypatch.setattr(hdr, "ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr(hdr, "run_cmd", fake_run_cmd)
+    monkeypatch.setattr(hdr, "run_ffmpeg_command", fake_run_cmd)
 
     success, message, output_path = create_hdr10_copy(info, tmp_path, logger=lambda _msg: None)
 

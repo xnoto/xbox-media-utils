@@ -165,6 +165,48 @@ XBOX_PLEX_PREFS_PATH=/var/lib/plexmediaserver/...  # Path to Preferences.xml
 
 JSON Lines format with processing results for each file.
 
+## Resumable Library Processing
+
+Long-running library recodes should run one Plex section at a time under the packaged systemd
+template. The service waits between files while Plex is transcoding or ROCm compute/VRAM is busy.
+While FFmpeg is running it continues polling Plex, pauses the recode process group if a Plex
+transcode begins, and resumes after Plex finishes. Otherwise it runs at full speed with
+idle-class/low-weight I/O scheduling. It restarts after abnormal termination or reboot and relies on
+`xbox-recode` to recover transactional `.xbox.mkv`/`.bak` artifacts before resuming.
+
+Install the unit after upgrading the uv tool:
+
+```bash
+unit=$(sudo -H /root/.local/bin/xbox-recode service-unit)
+sudo install -m 0644 "$unit" /etc/systemd/system/xbox-recode-library@.service
+sudo systemctl daemon-reload
+```
+
+Run only one active section at a time, in this order. Do not target `/mnt/jbod/plex` itself because
+that also contains the separately managed `backup` tree.
+
+```bash
+sudo systemctl enable --now xbox-recode-library@movies.service
+# After movies completes and its failures are reviewed:
+sudo systemctl disable xbox-recode-library@movies.service
+sudo systemctl enable --now xbox-recode-library@tv.service
+# Then repeat for other.
+```
+
+Inspect progress without changing the running job:
+
+```bash
+sudo systemctl status xbox-recode-library@movies.service
+sudo journalctl -u xbox-recode-library@movies.service -f
+sudo xbox-recode status
+sudo xbox-recode status --json
+```
+
+Completed files are compatible on the next scan and are skipped after a restart. A normal nonzero
+exit caused by permanent file failures is deliberately not restarted in a loop; an operator should
+review `xbox-recode status` before restarting. Stopping the service may interrupt the current file,
+but the original remains recoverable and the next start reconciles partial artifacts.
+
 ## License
 
 MIT
