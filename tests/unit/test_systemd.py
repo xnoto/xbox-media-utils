@@ -13,6 +13,7 @@ def test_recode_systemd_unit_is_packaged_and_safely_scoped():
     assert "--wait-for-gpu-idle" in contents
     assert "--wait-for-plex-idle" in contents
     assert "Restart=on-abnormal" in contents
-    assert "RequiresMountsFor=/mnt/jbod/plex/%i" in contents
+    assert "Requires=mnt-jbod.mount" in contents
+    assert "After=local-fs.target network-online.target mnt-jbod.mount" in contents
     assert "IOSchedulingClass=idle" in contents
     assert "IOWeight=10" in contents
