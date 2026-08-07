@@ -122,7 +122,7 @@ Use the packaged `xbox-recode-library@.service` template for multi-day processin
 `movies`, `tv`, or `other` active at a time. The service waits for idle Plex transcoding and ROCm
 compute/VRAM between files, pauses an active FFmpeg process if a Plex transcode begins, and otherwise
 runs with reduced CPU/I/O priority. `xbox-recode status --json` is the agent-facing progress
-interface. Do not process `/mnt/jbod/plex` as one root because it includes the separately managed
+interface. Do not process `<plex-root>` as one root because it may include the separately managed
 `backup` tree. After interruption, allow artifact recovery to reconcile `.xbox.mkv` and `.bak` files
 while holding the normal recode lock.
 
