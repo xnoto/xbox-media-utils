@@ -1,0 +1,28 @@
+[Unit]
+Description=Resumable Xbox media recode for Plex section %i
+After=local-fs.target network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/jbod/plex/%i
+ConditionPathIsDirectory=/mnt/jbod/plex/%i
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/.local/bin/xbox-recode process /mnt/jbod/plex/%i --plex /mnt/jbod/plex --wait-for-gpu-idle --gpu-poll-seconds 300 --max-gpu-use 5 --max-gpu-memory-use 10 --wait-for-plex-idle --plex-poll-seconds 30
+Restart=on-abnormal
+RestartSec=300
+KillMode=control-group
+TimeoutStopSec=300
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=25
+CPUQuota=1200%
+IOWeight=10
+OOMScoreAdjust=250
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xbox-recode-%i
+
+[Install]
+WantedBy=multi-user.target

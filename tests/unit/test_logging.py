@@ -9,6 +9,7 @@ import pytest
 from xbox_media_utils.core.logging import (
     get_log_file_path,
     read_log_entries,
+    summarize_recode_progress,
     write_log_entry,
 )
 
@@ -161,3 +162,42 @@ class TestReadLogEntries:
 
         with pytest.raises(json.JSONDecodeError):
             read_log_entries(log_file)
+
+
+def test_summarize_recode_progress_correlates_lifecycle_and_tolerates_corruption(
+    tmp_path: Path,
+):
+    log_file = tmp_path / "recode-2026-08-06.jsonl"
+    entries = [
+        {
+            "event": "started",
+            "operation_id": "done",
+            "path": "/movies/done.mkv",
+            "timestamp": "2026-08-06T01:00:00",
+        },
+        {
+            "event": "finished",
+            "operation_id": "done",
+            "path": "/movies/done.mkv",
+            "status": "success",
+            "space_saved_bytes": 1024,
+        },
+        {
+            "event": "started",
+            "operation_id": "interrupted",
+            "path": "/movies/interrupted.mkv",
+            "timestamp": "2026-08-06T02:00:00",
+        },
+        {"event": "recovery", "status": "restore", "path": "/movies/recovered.mkv"},
+    ]
+    log_file.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n{broken\n")
+
+    summary = summarize_recode_progress(tmp_path)
+
+    assert summary["finished"] == 1
+    assert summary["succeeded"] == 1
+    assert summary["unfinished"] == 1
+    assert summary["unfinished_operations"][0]["path"] == "/movies/interrupted.mkv"
+    assert summary["space_saved_bytes"] == 1024
+    assert summary["recovery_events"] == 1
+    assert summary["corrupt_log_lines"] == 1

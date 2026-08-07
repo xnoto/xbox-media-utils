@@ -6,12 +6,14 @@ Processes existing media files in-place for Xbox Series X / Plex compatibility.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
-import subprocess
 import sys
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from xbox_media_utils.api import PlexError, PlexScanner
 from xbox_media_utils.cli.common import (
@@ -26,13 +28,22 @@ from xbox_media_utils.core import (
     LOG_DIR,
     PLEX_GROUP,
     PLEX_USER,
+    GpuStatusError,
     LockAcquisitionError,
+    PlexStatusError,
     acquire_lock,
     get_dovi_backup_root,
     get_plex_root,
+    summarize_recode_progress,
+    wait_for_plex_transcodes,
+    wait_for_rocm_gpu_idle,
     write_log_entry,
 )
-from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
+from xbox_media_utils.ffmpeg import (
+    run_ffmpeg_command,
+    run_ffmpeg_with_fallback,
+    validate_output,
+)
 from xbox_media_utils.files import (
     collect_media_files,
     get_root_media_destination,
@@ -53,6 +64,7 @@ from xbox_media_utils.media import (
     probe_file,
 )
 from xbox_media_utils.subtitles import extract_subtitles
+from xbox_media_utils.systemd import recode_unit_path
 
 
 def log(msg: str, quiet: bool = False) -> None:
@@ -73,6 +85,168 @@ def trigger_plex_scan(target: Path, quiet: bool = False) -> bool:
     return bool(result["success"])
 
 
+def wait_for_background_capacity(
+    quiet: bool,
+    wait_for_plex_idle: bool = False,
+    plex_poll_seconds: int = 30,
+    wait_for_gpu_idle: bool = False,
+    gpu_poll_seconds: int = 300,
+    max_gpu_use: int = 5,
+    max_gpu_memory_use: int = 10,
+) -> None:
+    """Wait until Plex and local-model GPU activity permit background work."""
+
+    def wait_for_plex() -> None:
+        if not wait_for_plex_idle:
+            return
+        try:
+            wait_for_plex_transcodes(
+                poll_seconds=plex_poll_seconds,
+                logger=lambda message: log(f"  {message}", quiet),
+            )
+        except PlexStatusError as e:
+            raise RuntimeError(f"cannot determine safe Plex transcode state: {e}") from e
+
+    wait_for_plex()
+    if wait_for_gpu_idle:
+        try:
+            wait_for_rocm_gpu_idle(
+                max_use_percent=max_gpu_use,
+                max_memory_percent=max_gpu_memory_use,
+                poll_seconds=gpu_poll_seconds,
+                logger=lambda message: log(f"  {message}", quiet),
+            )
+        except GpuStatusError as e:
+            raise RuntimeError(f"cannot determine safe GPU idle state: {e}") from e
+    # GPU waiting can take long enough for a Plex transcode to begin.
+    wait_for_plex()
+
+
+def recover_interrupted_recodes(
+    target: Path,
+    dry_run: bool = False,
+    quiet: bool = False,
+    plex_user: str = PLEX_USER,
+    plex_group: str = PLEX_GROUP,
+) -> list[dict[str, Any]]:
+    """Recover transactional recode artifacts left by an interrupted process."""
+    root = target.parent if target.is_file() else target
+    events = []
+    handled_outputs: set[Path] = set()
+
+    for backup_path in sorted(root.rglob("*.bak")):
+        original_path = Path(str(backup_path)[: -len(".bak")])
+        if original_path.suffix.lower() not in MEDIA_EXTENSIONS:
+            continue
+        output_path = original_path.with_suffix(".xbox.mkv")
+        final_path = original_path.with_suffix(".mkv")
+        handled_outputs.add(output_path)
+        candidate = (
+            final_path if final_path.exists() else output_path if output_path.exists() else None
+        )
+
+        valid = False
+        validation_message = "No completed output found"
+        if candidate:
+            backup_info = probe_file(backup_path)
+            if backup_info.probe_error:
+                validation_message = f"Could not probe backup: {backup_info.probe_error}"
+            else:
+                valid, validation_message = validate_output(backup_info, candidate)
+
+        if valid and candidate:
+            action = "finalize"
+            message = f"Recovered validated output: {final_path}"
+            if not dry_run:
+                if candidate == output_path:
+                    output_path.replace(final_path)
+                elif output_path.exists():
+                    output_path.unlink()
+                backup_path.unlink()
+                set_ownership(final_path, plex_user, plex_group)
+        else:
+            action = "restore"
+            message = f"Restored original after interruption: {validation_message}"
+            if not dry_run:
+                for artifact in {output_path, final_path}:
+                    if artifact.exists() and artifact != backup_path:
+                        artifact.unlink()
+                backup_path.replace(original_path)
+                set_ownership(original_path, plex_user, plex_group)
+
+        status = f"would_{action}" if dry_run else action
+        log(f"  Recovery {status}: {original_path.name}", quiet)
+        events.append(
+            {
+                "event": "recovery",
+                "status": status,
+                "path": str(original_path),
+                "message": message,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    for output_path in sorted(root.rglob("*.xbox.mkv")):
+        if output_path in handled_outputs:
+            continue
+        base_name = output_path.name[: -len(".xbox.mkv")]
+        originals = [
+            output_path.parent / f"{base_name}{extension}"
+            for extension in MEDIA_EXTENSIONS
+            if (output_path.parent / f"{base_name}{extension}").exists()
+        ]
+        if not originals:
+            events.append(
+                {
+                    "event": "recovery",
+                    "status": "orphaned",
+                    "path": str(output_path),
+                    "message": "Orphaned .xbox.mkv requires manual review",
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+            log(f"  Recovery orphaned: {output_path}", quiet)
+            continue
+
+        status = "would_remove_partial" if dry_run else "removed_partial"
+        if not dry_run:
+            output_path.unlink()
+        events.append(
+            {
+                "event": "recovery",
+                "status": status,
+                "path": str(output_path),
+                "message": f"Removed partial output; original retained: {originals[0]}",
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        log(f"  Recovery {status}: {output_path.name}", quiet)
+
+    return events
+
+
+def print_recode_status(log_dir: Path, as_json: bool = False) -> None:
+    """Print durable recode progress for a human operator or another agent."""
+    summary = summarize_recode_progress(log_dir)
+    if as_json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return
+
+    print("RECODE PROGRESS")
+    print(f"Finished:      {summary['finished']}")
+    print(f"Succeeded:     {summary['succeeded']}")
+    print(f"Failed:        {summary['failed']}")
+    print(f"Incompatible:  {summary['incompatible']}")
+    print(f"Unfinished:    {summary['unfinished']}")
+    print(f"Space saved:   {summary['space_saved_bytes'] / (1024**3):.2f} GiB")
+    print(f"Recoveries:    {summary['recovery_events']}")
+    print(f"Corrupt lines: {summary['corrupt_log_lines']}")
+    for operation in summary["unfinished_operations"]:
+        print(f"  unfinished: {operation['path']} ({operation['started_at']})")
+    for failure in summary["recent_failures"]:
+        print(f"  {failure['status']}: {failure['path']}: {failure['error']}")
+
+
 def process_file(
     info,
     dry_run: bool = False,
@@ -83,6 +257,8 @@ def process_file(
     dovi_backup_root: Path | None = None,
     library_root: Path | None = None,
     process_dovi_backup: bool = False,
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
 ) -> dict:
     """Process a single file."""
     result: dict[str, Any] = {
@@ -214,7 +390,11 @@ def process_file(
     if needs_hdr10:
         log(f"  Creating HDR10 copy for DoVi P8: {info.path.name}", quiet)
         hdr10_success, hdr10_msg, hdr10_path = create_hdr10_copy(
-            info, info.path.parent, logger=lambda m: log(m, quiet)
+            info,
+            info.path.parent,
+            logger=lambda m: log(m, quiet),
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
         )
         result["hdr10_copy"] = {
             "success": hdr10_success,
@@ -288,7 +468,12 @@ def process_file(
             str(output_path),
         ]
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = run_ffmpeg_command(
+            cmd,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+            logger=lambda message: log(f"  {message}", quiet),
+        )
 
         if proc.returncode != 0:
             result["status"] = "failed"
@@ -304,7 +489,13 @@ def process_file(
     else:
         # Transcode path
         log(f"  Processing: {info.path.name}", quiet)
-        success, error = run_ffmpeg_with_fallback(processing_info, output_path, use_hardware)
+        success, error = run_ffmpeg_with_fallback(
+            processing_info,
+            output_path,
+            use_hardware,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+        )
 
         if not success:
             result["status"] = "failed"
@@ -557,6 +748,40 @@ def main():
         action="store_true",
         help="Do not trigger a Plex scan after successful processing",
     )
+    process_parser.add_argument(
+        "--wait-for-gpu-idle",
+        action="store_true",
+        help="Wait between files while ROCm compute or VRAM usage is busy",
+    )
+    process_parser.add_argument(
+        "--gpu-poll-seconds",
+        type=int,
+        default=300,
+        help="Seconds between ROCm activity checks (default: 300)",
+    )
+    process_parser.add_argument(
+        "--max-gpu-use",
+        type=int,
+        default=5,
+        help="Maximum GPU use percentage considered idle (default: 5)",
+    )
+    process_parser.add_argument(
+        "--max-gpu-memory-use",
+        type=int,
+        default=10,
+        help="Maximum VRAM use percentage considered idle (default: 10)",
+    )
+    process_parser.add_argument(
+        "--wait-for-plex-idle",
+        action="store_true",
+        help="Wait between files while Plex is actively transcoding",
+    )
+    process_parser.add_argument(
+        "--plex-poll-seconds",
+        type=int,
+        default=30,
+        help="Seconds between Plex transcoder checks (default: 30)",
+    )
     add_dry_run_argument(process_parser)
     add_quiet_argument(process_parser)
     add_no_hardware_argument(process_parser)
@@ -588,7 +813,22 @@ def main():
     )
     add_quiet_argument(incompat_parser)
 
+    status_parser = subparsers.add_parser("status", help="Summarize durable recode progress logs")
+    status_parser.add_argument(
+        "--log-dir", type=Path, default=Path(LOG_DIR), help="Recode log directory"
+    )
+    status_parser.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    subparsers.add_parser("service-unit", help="Print the packaged systemd service template path")
+
     args = parser.parse_args()
+
+    if args.command == "status":
+        print_recode_status(args.log_dir, args.json)
+        return
+    if args.command == "service-unit":
+        print(recode_unit_path())
+        return
 
     validate_path_exists(args.path)
 
@@ -610,6 +850,37 @@ def main():
         try:
             with acquire_lock(LOCK_FILE):
                 process_dovi_backup = args.command == "process-backups"
+                if args.command == "process":
+                    try:
+                        wait_for_background_capacity(
+                            quiet=quiet,
+                            wait_for_plex_idle=args.wait_for_plex_idle,
+                            plex_poll_seconds=args.plex_poll_seconds,
+                            wait_for_gpu_idle=args.wait_for_gpu_idle,
+                            gpu_poll_seconds=args.gpu_poll_seconds,
+                            max_gpu_use=args.max_gpu_use,
+                            max_gpu_memory_use=args.max_gpu_memory_use,
+                        )
+                    except RuntimeError as e:
+                        print(f"Error: {e}", file=sys.stderr)
+                        sys.exit(1)
+                    recovery_target = args.path.parent if args.file else args.path
+                    recovery_events = recover_interrupted_recodes(
+                        recovery_target,
+                        dry_run=args.dry_run,
+                        quiet=quiet,
+                    )
+                    if not args.dry_run:
+                        for event in recovery_events:
+                            write_log_entry(event, LOG_DIR, prefix="recode")
+                    orphaned = [event for event in recovery_events if event["status"] == "orphaned"]
+                    if orphaned:
+                        print(
+                            "Error: orphaned recode output requires manual review: "
+                            f"{orphaned[0]['path']}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
                 if args.file:
                     results = [probe_file(args.path)]
                 elif process_dovi_backup:
@@ -642,15 +913,67 @@ def main():
                 all_succeeded = True
                 target_was_file = args.path.is_file()
                 successful_scan_targets: set[Path] = set()
+                run_id = str(uuid4())
                 for info in to_process:
-                    result = process_file(
-                        info,
-                        dry_run=args.dry_run,
-                        quiet=quiet,
-                        use_hardware=use_hardware,
-                        dovi_backup_root=dovi_backup_root,
-                        library_root=plex_root,
-                        process_dovi_backup=process_dovi_backup,
+                    try:
+                        wait_for_background_capacity(
+                            quiet=quiet,
+                            wait_for_plex_idle=getattr(args, "wait_for_plex_idle", False),
+                            plex_poll_seconds=getattr(args, "plex_poll_seconds", 30),
+                            wait_for_gpu_idle=getattr(args, "wait_for_gpu_idle", False),
+                            gpu_poll_seconds=getattr(args, "gpu_poll_seconds", 300),
+                            max_gpu_use=getattr(args, "max_gpu_use", 5),
+                            max_gpu_memory_use=getattr(args, "max_gpu_memory_use", 10),
+                        )
+                    except RuntimeError as e:
+                        print(f"Error: {e}", file=sys.stderr)
+                        sys.exit(1)
+
+                    operation_id = str(uuid4())
+                    started_at = datetime.now().isoformat()
+                    if not args.dry_run:
+                        write_log_entry(
+                            {
+                                "event": "started",
+                                "status": "in_progress",
+                                "run_id": run_id,
+                                "operation_id": operation_id,
+                                "path": str(info.path),
+                                "video_recode_reason": info.video_recode_reason,
+                                "audio_recode_reason": info.audio_recode_reason,
+                                "timestamp": started_at,
+                            },
+                            LOG_DIR,
+                            prefix="recode",
+                        )
+
+                    try:
+                        result = process_file(
+                            info,
+                            dry_run=args.dry_run,
+                            quiet=quiet,
+                            use_hardware=use_hardware,
+                            dovi_backup_root=dovi_backup_root,
+                            library_root=plex_root,
+                            process_dovi_backup=process_dovi_backup,
+                            pause_for_plex=getattr(args, "wait_for_plex_idle", False),
+                            plex_poll_seconds=getattr(args, "plex_poll_seconds", 30),
+                        )
+                    except Exception as e:
+                        result = {
+                            "path": str(info.path),
+                            "status": "failed",
+                            "error": f"Unexpected processing error: {e}",
+                        }
+
+                    result.update(
+                        {
+                            "event": "finished",
+                            "run_id": run_id,
+                            "operation_id": operation_id,
+                            "started_at": started_at,
+                            "finished_at": datetime.now().isoformat(),
+                        }
                     )
                     write_log_entry(result, LOG_DIR, prefix="recode")
                     if result["status"] == "success":

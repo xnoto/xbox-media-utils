@@ -4,7 +4,8 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from .media import ffmpeg_path, run_cmd
+from .ffmpeg import run_ffmpeg_command
+from .media import ffmpeg_path
 from .models import MediaInfo
 
 
@@ -21,7 +22,11 @@ def needs_hdr10_copy(info: MediaInfo, existing_path: Optional[Path] = None) -> b
 
 
 def create_hdr10_copy(
-    info: MediaInfo, dest_dir: Path, logger=print
+    info: MediaInfo,
+    dest_dir: Path,
+    logger=print,
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
 ) -> tuple[bool, str, Optional[Path]]:
     """Create HDR10-only copy by stripping DoVi RPU metadata.
 
@@ -66,7 +71,12 @@ def create_hdr10_copy(
         str(temp_path),
     ]
 
-    result = run_cmd(cmd)
+    result = run_ffmpeg_command(
+        cmd,
+        pause_for_plex=pause_for_plex,
+        plex_poll_seconds=plex_poll_seconds,
+        logger=logger,
+    )
 
     if result.returncode != 0:
         if temp_path.exists():

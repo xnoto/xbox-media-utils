@@ -17,11 +17,23 @@ from xbox_media_utils.core.config import (
     get_dovi_backup_root,
     get_plex_root,
 )
+from xbox_media_utils.core.gpu import (
+    GpuStatusError,
+    GpuUsage,
+    get_rocm_gpu_usage,
+    wait_for_rocm_gpu_idle,
+)
 from xbox_media_utils.core.locking import LockAcquisitionError, acquire_lock
 from xbox_media_utils.core.logging import (
     get_log_file_path,
     read_log_entries,
+    summarize_recode_progress,
     write_log_entry,
+)
+from xbox_media_utils.core.plex_activity import (
+    PlexStatusError,
+    count_active_plex_transcodes,
+    wait_for_plex_transcodes,
 )
 
 __all__ = [
@@ -32,6 +44,14 @@ __all__ = [
     "write_log_entry",
     "get_log_file_path",
     "read_log_entries",
+    "summarize_recode_progress",
+    "GpuStatusError",
+    "GpuUsage",
+    "get_rocm_gpu_usage",
+    "wait_for_rocm_gpu_idle",
+    "PlexStatusError",
+    "count_active_plex_transcodes",
+    "wait_for_plex_transcodes",
     # Config
     "get_config_value",
     "get_plex_root",
