@@ -179,11 +179,12 @@ Install the unit after upgrading the uv tool:
 ```bash
 unit=$(sudo -H /root/.local/bin/xbox-recode service-unit)
 sudo install -m 0644 "$unit" /etc/systemd/system/xbox-recode-library@.service
+printf 'XBOX_PLEX_ROOT=/path/to/plex\n' | sudo tee /etc/sysconfig/xbox-recode
 sudo systemctl daemon-reload
 ```
 
-Run only one active section at a time, in this order. Do not target `/mnt/jbod/plex` itself because
-that also contains the separately managed `backup` tree.
+Set `XBOX_PLEX_ROOT` to the local Plex root, then run only one active section at a time in this
+order. Do not target the Plex root itself because it may contain a separately managed `backup` tree.
 
 ```bash
 sudo systemctl enable --now xbox-recode-library@movies.service

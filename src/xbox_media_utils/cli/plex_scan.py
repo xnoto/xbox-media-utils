@@ -29,7 +29,7 @@ Environment Variables:
   XBOX_PLEX_PREFS_PATH  Path to Preferences.xml
 
 Examples:
-  %(prog)s /mnt/jbod/plex/movies/Some.Movie
+  %(prog)s /path/to/plex/movies/Some.Movie
       Partial scan of the Movies library for that path
 
   %(prog)s --sections 6 9 10
