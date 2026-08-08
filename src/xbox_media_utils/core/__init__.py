@@ -32,8 +32,9 @@ from xbox_media_utils.core.logging import (
 )
 from xbox_media_utils.core.plex_activity import (
     PlexStatusError,
+    count_active_plex_playbacks,
     count_active_plex_transcodes,
-    wait_for_plex_transcodes,
+    wait_for_plex_playback_idle,
 )
 
 __all__ = [
@@ -50,8 +51,9 @@ __all__ = [
     "get_rocm_gpu_usage",
     "wait_for_rocm_gpu_idle",
     "PlexStatusError",
+    "count_active_plex_playbacks",
     "count_active_plex_transcodes",
-    "wait_for_plex_transcodes",
+    "wait_for_plex_playback_idle",
     # Config
     "get_config_value",
     "get_plex_root",

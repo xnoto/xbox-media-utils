@@ -35,7 +35,7 @@ from xbox_media_utils.core import (
     get_dovi_backup_root,
     get_plex_root,
     summarize_recode_progress,
-    wait_for_plex_transcodes,
+    wait_for_plex_playback_idle,
     wait_for_rocm_gpu_idle,
     write_log_entry,
 )
@@ -97,12 +97,12 @@ def wait_for_background_capacity(
         if not wait_for_plex_idle:
             return
         try:
-            wait_for_plex_transcodes(
+            wait_for_plex_playback_idle(
                 poll_seconds=plex_poll_seconds,
                 logger=lambda message: log(f"  {message}", quiet),
             )
         except PlexStatusError as e:
-            raise RuntimeError(f"cannot determine safe Plex transcode state: {e}") from e
+            raise RuntimeError(f"cannot determine safe Plex playback state: {e}") from e
 
     wait_for_plex()
     if wait_for_gpu_idle:
@@ -115,7 +115,7 @@ def wait_for_background_capacity(
             )
         except GpuStatusError as e:
             raise RuntimeError(f"cannot determine safe GPU idle state: {e}") from e
-    # GPU waiting can take long enough for a Plex transcode to begin.
+    # GPU waiting can take long enough for Plex playback to begin.
     wait_for_plex()
 
 
@@ -782,13 +782,13 @@ def main():
     process_parser.add_argument(
         "--wait-for-plex-idle",
         action="store_true",
-        help="Wait between files while Plex is actively transcoding",
+        help="Wait between files while Plex video playback is active",
     )
     process_parser.add_argument(
         "--plex-poll-seconds",
         type=int,
         default=30,
-        help="Seconds between Plex transcoder checks (default: 30)",
+        help="Seconds between Plex playback checks (default: 30)",
     )
     add_dry_run_argument(process_parser)
     add_quiet_argument(process_parser)

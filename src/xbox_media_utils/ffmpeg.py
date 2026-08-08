@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .constants import UHD_MAX_HEIGHT, UHD_MAX_WIDTH, XBOX_MAX_VIDEO_FPS
-from .core.plex_activity import PlexStatusError, count_active_plex_transcodes
+from .core.plex_activity import PlexStatusError, count_active_plex_playbacks
 from .media import (
     exceeds_uhd_resolution,
     exceeds_xbox_frame_rate,
@@ -87,7 +87,7 @@ def run_ffmpeg_command(
     plex_poll_seconds: int = 30,
     logger=print,
 ) -> subprocess.CompletedProcess:
-    """Run FFmpeg, pausing its process group while Plex is transcoding."""
+    """Run FFmpeg, pausing its process group during Plex video playback."""
     if not pause_for_plex:
         return subprocess.run(cmd, capture_output=True, text=True)
 
@@ -106,25 +106,25 @@ def run_ffmpeg_command(
         try:
             while process.poll() is None:
                 try:
-                    active_transcodes = count_active_plex_transcodes()
+                    active_playbacks = count_active_plex_playbacks()
                 except PlexStatusError as e:
                     # Fail closed: stop disk-intensive work until process
                     # inspection succeeds again.
-                    active_transcodes = 1
+                    active_playbacks = 1
                     logger(f"Could not inspect Plex activity; pausing recode: {e}")
 
-                if active_transcodes and not paused:
+                if active_playbacks and not paused:
                     try:
                         os.killpg(process.pid, signal.SIGSTOP)
                         paused = True
-                        logger(f"Paused recode for {active_transcodes} active Plex transcode(s)")
+                        logger(f"Paused recode for {active_playbacks} active Plex playback(s)")
                     except ProcessLookupError:
                         break
-                elif not active_transcodes and paused:
+                elif not active_playbacks and paused:
                     try:
                         os.killpg(process.pid, signal.SIGCONT)
                         paused = False
-                        logger("Resumed recode after Plex transcodes completed")
+                        logger("Resumed recode after Plex playback completed")
                     except ProcessLookupError:
                         break
 

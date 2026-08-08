@@ -471,10 +471,10 @@ def test_run_ffmpeg_with_fallback_retries_vaapi_device_init_failure(monkeypatch,
     assert "libx265" in calls[1]
 
 
-def test_run_ffmpeg_command_pauses_and_resumes_for_plex_transcode(monkeypatch):
+def test_run_ffmpeg_command_pauses_and_resumes_for_plex_playback(monkeypatch):
     readings = iter([1, 0, 0])
     monkeypatch.setattr(
-        "xbox_media_utils.ffmpeg.count_active_plex_transcodes",
+        "xbox_media_utils.ffmpeg.count_active_plex_playbacks",
         lambda: next(readings, 0),
     )
     messages = []

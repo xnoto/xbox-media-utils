@@ -916,7 +916,7 @@ def test_main_waits_for_rocm_idle_before_processing_file(tmp_path: Path, monkeyp
     assert waits[0]["max_memory_percent"] == 10
 
 
-def test_main_checks_plex_transcodes_before_processing_file(tmp_path: Path, monkeypatch):
+def test_main_checks_plex_playback_before_processing_file(tmp_path: Path, monkeypatch):
     target = tmp_path / "movies" / "Movie"
     target.mkdir(parents=True)
     info = MediaInfo(path=target / "movie.mkv", needs_video_recode=True)
@@ -925,7 +925,7 @@ def test_main_checks_plex_transcodes_before_processing_file(tmp_path: Path, monk
     waits = []
     monkeypatch.setattr(
         recode,
-        "wait_for_plex_transcodes",
+        "wait_for_plex_playback_idle",
         lambda **kwargs: waits.append(kwargs),
     )
     monkeypatch.setattr(
