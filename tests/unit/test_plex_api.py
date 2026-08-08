@@ -256,6 +256,40 @@ class TestScanSections:
         assert "does not exist" in results[99]["message"]
 
 
+class TestGetSessions:
+    """Test suite for current Plex playback sessions."""
+
+    def test_returns_session_metadata(self):
+        scanner = PlexScanner(token="test")
+        scanner._api_get = MagicMock(
+            return_value={"MediaContainer": {"Metadata": [{"type": "movie"}]}}
+        )
+
+        assert scanner.get_sessions() == [{"type": "movie"}]
+        scanner._api_get.assert_called_once_with("/status/sessions")
+
+    def test_empty_response_returns_no_sessions(self):
+        scanner = PlexScanner(token="test")
+        scanner._api_get = MagicMock(return_value=None)
+
+        assert scanner.get_sessions() == []
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            [{"type": "movie"}],
+            {"unexpected": {}},
+            {"MediaContainer": {"Metadata": {"type": "movie"}}},
+        ],
+    )
+    def test_invalid_response_raises_plex_error(self, response):
+        scanner = PlexScanner(token="test")
+        scanner._api_get = MagicMock(return_value=response)
+
+        with pytest.raises(PlexError):
+            scanner.get_sessions()
+
+
 class TestApiGet:
     """Test suite for _api_get method."""
 
@@ -282,6 +316,17 @@ class TestApiGet:
         result = scanner._api_get("/test")
 
         assert result is None
+
+    @patch("xbox_media_utils.api.plex.urlopen")
+    def test_invalid_json_raises_plex_error(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"not-json"
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        scanner = PlexScanner(token="test")
+
+        with pytest.raises(PlexError, match="invalid JSON"):
+            scanner._api_get("/status/sessions")
 
     @patch("xbox_media_utils.api.plex.urlopen")
     def test_http_error_raises_plex_error(self, mock_urlopen):

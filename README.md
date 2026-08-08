@@ -169,10 +169,11 @@ JSON Lines format with processing results for each file.
 ## Resumable Library Processing
 
 Long-running library recodes should run one Plex section at a time under the packaged systemd
-template. The service waits between files while Plex is transcoding or ROCm compute/VRAM is busy.
-While FFmpeg is running it continues polling Plex, pauses the recode process group if a Plex
-transcode begins, and resumes after Plex finishes. Otherwise it runs at full speed with
-idle-class/low-weight I/O scheduling. It restarts after abnormal termination or reboot and relies on
+template. The service waits between files while Plex video playback or ROCm compute/VRAM is busy.
+While FFmpeg is running it continues polling Plex, pauses the recode process group if Direct Play,
+Direct Stream, or transcoding begins, and resumes after playback finishes. The service checks Plex
+every five seconds. Otherwise it runs at full speed with idle-class/low-weight I/O scheduling. It
+restarts after abnormal termination or reboot and relies on
 `xbox-recode` to recover transactional `.xbox.mkv`/`.bak` artifacts before resuming.
 
 Install the unit after upgrading the uv tool:

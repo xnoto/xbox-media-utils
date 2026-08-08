@@ -123,9 +123,10 @@ never reorganizes archive content.
 ### Long-Running Library Recodes
 
 Use the packaged `xbox-recode-library@.service` template for multi-day processing, with only one of
-`movies`, `tv`, or `other` active at a time. The service waits for idle Plex transcoding and ROCm
-compute/VRAM between files, pauses an active FFmpeg process if a Plex transcode begins, and otherwise
-runs with reduced CPU/I/O priority. `xbox-recode status --json` is the agent-facing progress
+`movies`, `tv`, or `other` active at a time. The service waits for idle Plex video playback and ROCm
+compute/VRAM between files, pauses an active FFmpeg process if Direct Play, Direct Stream, or
+transcoding begins, and otherwise runs with reduced CPU/I/O priority. Plex playback is polled every
+five seconds. `xbox-recode status --json` is the agent-facing progress
 interface. Do not process `<plex-root>` as one root because it may include the separately managed
 `backup` tree. After interruption, allow artifact recovery to reconcile `.xbox.mkv` and `.bak` files
 while holding the normal recode lock.

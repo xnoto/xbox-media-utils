@@ -101,7 +101,10 @@ class PlexScanner:
                 body = resp.read()
                 if not body or not body.strip():
                     return None
-                return json.loads(body)
+                try:
+                    return json.loads(body)
+                except json.JSONDecodeError as e:
+                    raise PlexError(f"Plex API returned invalid JSON: {path}") from e
         except HTTPError as e:
             raise PlexError(f"Plex API HTTP {e.code}: {path}") from e
         except URLError as e:
@@ -116,6 +119,21 @@ class PlexScanner:
             else:
                 self._sections = []
         return self._sections
+
+    def get_sessions(self) -> list[dict]:
+        """Return the current Plex playback sessions."""
+        data = self._api_get("/status/sessions")
+        if not data:
+            return []
+        if not isinstance(data, dict):
+            raise PlexError("Plex sessions response is not an object")
+        container = data.get("MediaContainer")
+        if not isinstance(container, dict):
+            raise PlexError("Plex sessions response has no MediaContainer")
+        sessions = container.get("Metadata", [])
+        if not isinstance(sessions, list):
+            raise PlexError("Plex sessions response has invalid Metadata")
+        return sessions
 
     def _resolve_section_for_path(self, target: Path) -> Optional[dict]:
         """Find library section containing the target path.
