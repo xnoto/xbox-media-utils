@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -39,6 +40,27 @@ DV_TO_SDR_FILTER = (
     "zscale=transfer=bt709:primaries=bt709:matrix=bt709,"
     "format=yuv420p"
 )
+
+
+def mkvmerge_path() -> str:
+    """Return the mkvmerge executable required for timestamp-safe Matroska remuxes."""
+    path = shutil.which("mkvmerge")
+    if not path:
+        raise FileNotFoundError("mkvmerge not found; install MKVToolNix")
+    return path
+
+
+def _add_audio_options(cmd: list[str], info: MediaInfo) -> None:
+    """Add per-track audio copy/recode options to an FFmpeg command."""
+    for i, track in enumerate(info.audio_tracks):
+        if track.needs_recode:
+            cmd.extend([f"-c:a:{i}", "aac", f"-ac:a:{i}", "2", f"-b:a:{i}", "256k"])
+            if track.channels > 2:
+                cmd.extend([f"-filter:a:{i}", DOWNMIX_FILTER])
+            elif track.channels == 1:
+                cmd.extend([f"-filter:a:{i}", MONO_TO_STEREO_FILTER])
+        else:
+            cmd.extend([f"-c:a:{i}", "copy"])
 
 
 def _xbox_video_filters(info: MediaInfo) -> list[str]:
@@ -219,15 +241,7 @@ def build_ffmpeg_cmd(
         cmd.extend(["-c:v", "copy"])
 
     # Audio handling — per-track codec decisions
-    for i, track in enumerate(info.audio_tracks):
-        if track.needs_recode:
-            cmd.extend([f"-c:a:{i}", "aac", f"-ac:a:{i}", "2", f"-b:a:{i}", "256k"])
-            if track.channels > 2:
-                cmd.extend([f"-filter:a:{i}", DOWNMIX_FILTER])
-            elif track.channels == 1:
-                cmd.extend([f"-filter:a:{i}", MONO_TO_STEREO_FILTER])
-        else:
-            cmd.extend([f"-c:a:{i}", "copy"])
+    _add_audio_options(cmd, info)
 
     # No embedded subtitles - they're extracted to sidecar files
     cmd.extend(["-sn"])
@@ -237,6 +251,117 @@ def build_ffmpeg_cmd(
 
     cmd.extend(["-y", str(output_path)])
     return cmd
+
+
+def build_audio_ffmpeg_cmd(info: MediaInfo, output_path: Path) -> list[str]:
+    """Build an audio-only FFmpeg command for a timestamp-safe mkvmerge pass."""
+    cmd = [
+        ffmpeg_path(),
+        "-copyts",
+        "-i",
+        str(info.path),
+        "-map",
+        "0:a",
+        "-vn",
+        "-sn",
+    ]
+    _add_audio_options(cmd, info)
+    cmd.extend(["-y", str(output_path)])
+    return cmd
+
+
+def build_mkvmerge_cmd(
+    input_path: Path,
+    output_path: Path,
+    audio_path: Optional[Path] = None,
+) -> list[str]:
+    """Build a Matroska remux command that preserves source video timestamps."""
+    cmd = [mkvmerge_path(), "--output", str(output_path), "--no-subtitles"]
+    if audio_path:
+        cmd.append("--no-audio")
+    cmd.append(str(input_path))
+    if audio_path:
+        cmd.extend(
+            [
+                "--no-video",
+                "--no-subtitles",
+                "--no-chapters",
+                "--no-attachments",
+                "--no-global-tags",
+                str(audio_path),
+            ]
+        )
+    return cmd
+
+
+def remux_with_mkvmerge(
+    input_path: Path,
+    output_path: Path,
+    audio_path: Optional[Path] = None,
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
+    logger=print,
+) -> tuple[bool, str]:
+    """Remux with MKVToolNix so Matroska video timestamps remain intact."""
+    try:
+        cmd = build_mkvmerge_cmd(input_path, output_path, audio_path)
+    except FileNotFoundError as e:
+        return False, str(e)
+
+    try:
+        proc = run_ffmpeg_command(
+            cmd,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+            logger=logger,
+        )
+    except OSError as e:
+        output_path.unlink(missing_ok=True)
+        return False, str(e)
+    if proc.returncode == 0:
+        return True, ""
+    output_path.unlink(missing_ok=True)
+    return False, proc.stderr or proc.stdout or "mkvmerge failed"
+
+
+def recode_audio_with_mkvmerge(
+    info: MediaInfo,
+    output_path: Path,
+    pause_for_plex: bool = False,
+    plex_poll_seconds: int = 30,
+) -> tuple[bool, str]:
+    """Recode audio separately, then merge it with the untouched Matroska video."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{output_path.stem}.",
+        suffix=".audio.mka",
+        dir=output_path.parent,
+    )
+    os.close(fd)
+    audio_path = Path(temp_name)
+    try:
+        try:
+            proc = run_ffmpeg_command(
+                build_audio_ffmpeg_cmd(info, audio_path),
+                pause_for_plex=pause_for_plex,
+                plex_poll_seconds=plex_poll_seconds,
+            )
+        except OSError as e:
+            output_path.unlink(missing_ok=True)
+            return False, str(e)
+        if proc.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            return False, proc.stderr or "FFmpeg audio recode failed"
+
+        return remux_with_mkvmerge(
+            info.path,
+            output_path,
+            audio_path=audio_path,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+        )
+    finally:
+        audio_path.unlink(missing_ok=True)
 
 
 def get_best_duration(path: Path) -> float:
@@ -389,6 +514,44 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
     except (json.JSONDecodeError, ValueError):
         return False, "Could not parse output stream metadata"
 
+    timestamp_result = run_cmd(
+        [
+            ffprobe_path(),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+10",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts,dts",
+            "-of",
+            "json",
+            str(output_path),
+        ]
+    )
+    if timestamp_result.returncode != 0:
+        return False, "Could not probe output video timestamps"
+    try:
+        packets = json.loads(timestamp_result.stdout).get("packets", [])
+        if not packets:
+            return False, "Output has no opening video timestamp data"
+        for field in ("pts", "dts"):
+            timestamps = [
+                int(packet[field]) for packet in packets if packet.get(field) not in (None, "N/A")
+            ]
+            if len(timestamps) < 2:
+                return False, f"Output has insufficient video {field.upper()} timestamp data"
+            duplicate_pts = field == "pts" and len(timestamps) != len(set(timestamps))
+            non_monotonic_dts = field == "dts" and any(
+                current <= previous for previous, current in zip(timestamps, timestamps[1:])
+            )
+            if duplicate_pts or non_monotonic_dts:
+                return False, f"Non-monotonic opening video {field.upper()} timestamps"
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False, "Could not parse output video timestamps"
+
     return True, "OK"
 
 
@@ -425,6 +588,14 @@ def run_ffmpeg_with_fallback(
     Returns: (success, error_message)
     """
     from .media import can_use_vaapi
+
+    if not info.needs_video_recode:
+        return recode_audio_with_mkvmerge(
+            info,
+            output_path,
+            pause_for_plex=pause_for_plex,
+            plex_poll_seconds=plex_poll_seconds,
+        )
 
     # First attempt: use VAAPI if eligible.
     # Dolby Vision sources are forced through software with explicit tonemapping

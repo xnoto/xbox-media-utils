@@ -152,6 +152,7 @@ XBOX_PLEX_PREFS_PATH=/var/lib/plexmediaserver/...  # Path to Preferences.xml
 ## Requirements
 
 - Python 3.9+
+- MKVToolNix (`mkvmerge`) for timestamp-safe Matroska remuxing
 - ffmpeg with VAAPI support (optional but recommended)
 - AMD/Intel GPU with VAAPI HEVC encode support
 - pgsrip, babelfish (auto-installed)

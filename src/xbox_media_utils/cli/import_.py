@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -187,34 +186,13 @@ def import_file(
             result["action"] = "transcode"
         elif has_subs:
             print(f"    Remuxing HDR10 copy (strip subs): {info.path.name}")
-            from xbox_media_utils.media import ffmpeg_path
+            from xbox_media_utils.ffmpeg import remux_with_mkvmerge
 
-            cmd = [
-                ffmpeg_path(),
-                "-y",
-                "-v",
-                "error",
-                "-i",
-                str(processing_info.path),
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "copy",
-                "-sn",
-                "-max_muxing_queue_size",
-                "65536",
-                str(temp_path),
-            ]
+            success, error = remux_with_mkvmerge(processing_info.path, temp_path)
 
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-
-            if proc.returncode != 0:
+            if not success:
                 result["status"] = "failed"
-                result["error"] = proc.stderr[-500:] if proc.stderr else "Remux failed"
+                result["error"] = error[-500:] if error else "Remux failed"
                 if temp_path.exists():
                     temp_path.unlink()
                 return result
@@ -273,34 +251,13 @@ def import_file(
         # Remux to strip subs
         temp_path = dest_dir / (info.path.stem + ".importing.mkv")
         print(f"    Remuxing (strip subs): {info.path.name}")
-        from xbox_media_utils.media import ffmpeg_path
+        from xbox_media_utils.ffmpeg import remux_with_mkvmerge
 
-        cmd = [
-            ffmpeg_path(),
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            str(info.path),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-sn",
-            "-max_muxing_queue_size",
-            "65536",
-            str(temp_path),
-        ]
+        success, error = remux_with_mkvmerge(info.path, temp_path)
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-
-        if proc.returncode != 0:
+        if not success:
             result["status"] = "failed"
-            result["error"] = proc.stderr[-500:] if proc.stderr else "Remux failed"
+            result["error"] = error[-500:] if error else "Remux failed"
             if temp_path.exists():
                 temp_path.unlink()
             return result
