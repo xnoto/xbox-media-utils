@@ -9,7 +9,10 @@ import pytest
 
 from xbox_media_utils.ffmpeg import (
     _is_vaapi_error,
+    build_audio_ffmpeg_cmd,
     build_ffmpeg_cmd,
+    build_mkvmerge_cmd,
+    recode_audio_with_mkvmerge,
     run_ffmpeg_command,
     run_ffmpeg_with_fallback,
     validate_output,
@@ -63,6 +66,68 @@ def test_build_ffmpeg_cmd_recodes_incompatible_stereo_audio_without_pan_filter()
     assert "-c:a:0" in cmd
     assert "aac" in cmd
     assert "-filter:a:0" not in cmd
+
+
+def test_build_audio_ffmpeg_cmd_excludes_video_when_recoding_audio():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        audio_tracks=[AudioTrack(index=1, codec="eac3", channels=6, needs_recode=True)],
+    )
+
+    cmd = build_audio_ffmpeg_cmd(info, Path("movie.audio.mka"))
+
+    assert "-copyts" in cmd
+    assert cmd.index("-copyts") < cmd.index("-i")
+    assert cmd[cmd.index("-map") + 1] == "0:a"
+    assert "-vn" in cmd
+    assert "aac" in cmd
+    assert "pan=stereo" in cmd[cmd.index("-filter:a:0") + 1]
+
+
+def test_build_mkvmerge_cmd_takes_video_from_source_and_audio_from_temp(monkeypatch):
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.mkvmerge_path", lambda: "mkvmerge")
+
+    cmd = build_mkvmerge_cmd(
+        Path("movie.mkv"),
+        Path("movie.xbox.mkv"),
+        Path("movie.audio.mka"),
+    )
+
+    assert cmd[:3] == ["mkvmerge", "--output", "movie.xbox.mkv"]
+    assert cmd.index("--no-audio") < cmd.index("movie.mkv")
+    assert cmd.index("--no-video") < cmd.index("movie.audio.mka")
+    assert "--no-subtitles" in cmd
+
+
+def test_recode_audio_with_mkvmerge_cleans_up_temporary_audio(monkeypatch, tmp_path):
+    source = tmp_path / "movie.mkv"
+    output = tmp_path / "movie.xbox.mkv"
+    source.write_text("source")
+    info = MediaInfo(
+        path=source,
+        video_codec="hevc",
+        audio_tracks=[AudioTrack(index=1, codec="eac3", channels=6, needs_recode=True)],
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        Path(cmd[-1]).write_text("audio")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def fake_remux(input_path, output_path, audio_path=None, **kwargs):
+        assert input_path == source
+        assert audio_path is not None and audio_path.exists()
+        output_path.write_text("merged")
+        return True, ""
+
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.run_ffmpeg_command", fake_run)
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.remux_with_mkvmerge", fake_remux)
+
+    assert recode_audio_with_mkvmerge(info, output) == (True, "")
+    assert len(calls) == 1
+    assert list(tmp_path.glob("*.audio.mka")) == []
 
 
 def test_build_ffmpeg_cmd_tonemaps_dolby_vision_to_sdr_bt709():
@@ -206,10 +271,16 @@ def test_validate_output_preserves_2160p_h264_geometry_when_converting_to_hevc(
     }
     monkeypatch.setattr("xbox_media_utils.ffmpeg.get_best_duration", lambda path: 60.0)
     monkeypatch.setattr("xbox_media_utils.ffmpeg.ffprobe_path", lambda: "ffprobe")
-    monkeypatch.setattr(
-        "xbox_media_utils.ffmpeg.run_cmd",
-        lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(stream_data), stderr=""),
-    )
+
+    def fake_run(cmd):
+        data = (
+            {"packets": [{"pts": 0, "dts": 0}, {"pts": 1, "dts": 1}]}
+            if "-show_packets" in cmd
+            else stream_data
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.run_cmd", fake_run)
 
     assert validate_output(info, output) == (True, "OK")
 
@@ -250,6 +321,98 @@ def test_validate_output_rejects_unrequested_resolution_loss(tmp_path, monkeypat
 
     assert valid is False
     assert message == "Resolution changed: 3840x2160 -> 1920x1080"
+
+
+def test_validate_output_rejects_duplicate_opening_video_timestamps(tmp_path, monkeypatch):
+    source = tmp_path / "movie.mkv"
+    output = tmp_path / "movie.xbox.mkv"
+    source.write_bytes(b"x" * 100)
+    output.write_bytes(b"x" * 50)
+    info = MediaInfo(
+        path=source,
+        video_codec="hevc",
+        video_width=3840,
+        video_height=2160,
+        video_frame_rate=24.0,
+    )
+    stream_data = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "width": 3840,
+                "height": 2160,
+                "avg_frame_rate": "24/1",
+                "pix_fmt": "yuv420p10le",
+            }
+        ]
+    }
+    packet_data = {
+        "packets": [
+            {"pts": 0, "dts": 0},
+            {"pts": 167},
+            {"pts": 83},
+            {"pts": 83},
+            {"pts": 125},
+            {"pts": 333, "dts": 83},
+            {"pts": 250, "dts": 83},
+        ]
+    }
+
+    def fake_run(cmd):
+        data = packet_data if "-show_packets" in cmd else stream_data
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.get_best_duration", lambda path: 60.0)
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.run_cmd", fake_run)
+
+    assert validate_output(info, output) == (
+        False,
+        "Non-monotonic opening video PTS timestamps",
+    )
+
+
+def test_validate_output_rejects_non_monotonic_opening_video_dts(tmp_path, monkeypatch):
+    source = tmp_path / "movie.mkv"
+    output = tmp_path / "movie.xbox.mkv"
+    source.write_bytes(b"x" * 100)
+    output.write_bytes(b"x" * 50)
+    info = MediaInfo(path=source, video_codec="hevc")
+    stream_data = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "avg_frame_rate": "24/1",
+                "pix_fmt": "yuv420p10le",
+            }
+        ]
+    }
+    packet_data = {
+        "packets": [
+            {"pts": 0, "dts": 0},
+            {"pts": 167},
+            {"pts": 83},
+            {"pts": 42},
+            {"pts": 125},
+            {"pts": 333, "dts": 83},
+            {"pts": 250, "dts": 83},
+        ]
+    }
+
+    def fake_run(cmd):
+        data = packet_data if "-show_packets" in cmd else stream_data
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(data), stderr="")
+
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.get_best_duration", lambda path: 60.0)
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.run_cmd", fake_run)
+
+    assert validate_output(info, output) == (
+        False,
+        "Non-monotonic opening video DTS timestamps",
+    )
 
 
 def test_can_use_vaapi_returns_false_for_dolby_vision_recode():

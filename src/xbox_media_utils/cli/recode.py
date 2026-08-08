@@ -39,11 +39,7 @@ from xbox_media_utils.core import (
     wait_for_rocm_gpu_idle,
     write_log_entry,
 )
-from xbox_media_utils.ffmpeg import (
-    run_ffmpeg_command,
-    run_ffmpeg_with_fallback,
-    validate_output,
-)
+from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import (
     collect_media_files,
     get_root_media_destination,
@@ -445,39 +441,19 @@ def process_file(
     # Remux-only path (no recode needed)
     if not needs_recode and has_subs:
         log(f"  Remuxing to strip embedded subs: {info.path.name}", quiet)
-        from xbox_media_utils.media import ffmpeg_path
+        from xbox_media_utils.ffmpeg import remux_with_mkvmerge
 
-        cmd = [
-            ffmpeg_path(),
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            str(processing_info.path),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "copy",
-            "-sn",
-            "-max_muxing_queue_size",
-            "65536",
-            str(output_path),
-        ]
-
-        proc = run_ffmpeg_command(
-            cmd,
+        success, error = remux_with_mkvmerge(
+            processing_info.path,
+            output_path,
             pause_for_plex=pause_for_plex,
             plex_poll_seconds=plex_poll_seconds,
             logger=lambda message: log(f"  {message}", quiet),
         )
 
-        if proc.returncode != 0:
+        if not success:
             result["status"] = "failed"
-            result["error"] = proc.stderr[-500:] if proc.stderr else "Remux failed"
+            result["error"] = error[-500:] if error else "Remux failed"
             if output_path.exists():
                 output_path.unlink()
             return result

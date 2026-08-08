@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -67,17 +66,16 @@ def test_process_file_sets_ownership_for_extracted_subtitles(tmp_path: Path, mon
         subtitle_path.write_text("subtitle")
         return [{"success": True, "output": str(subtitle_path)}]
 
-    def fake_run(cmd, **kwargs):
+    def fake_remux(input_path, output, **kwargs):
         output_path.write_text("remuxed")
-        return SimpleNamespace(returncode=0, stderr="")
+        return True, ""
 
     def fake_set_ownership(path, user, group):
         ownership_calls.append((Path(path), user, group))
         return True, None
 
     monkeypatch.setattr(recode, "extract_subtitles", fake_extract_subtitles)
-    monkeypatch.setattr("xbox_media_utils.media.ffmpeg_path", lambda: "ffmpeg")
-    monkeypatch.setattr(recode, "run_ffmpeg_command", fake_run)
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.remux_with_mkvmerge", fake_remux)
     monkeypatch.setattr(recode, "validate_output", lambda info, path: (True, "OK"))
     monkeypatch.setattr(recode, "set_ownership", fake_set_ownership)
 
