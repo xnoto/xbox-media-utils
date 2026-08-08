@@ -3,6 +3,7 @@
 import grp
 import os
 import pwd
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -53,8 +54,13 @@ def collect_media_files(source: Path, extensions: set[str]) -> list[Path]:
     return sorted(set(files))
 
 
-def get_root_media_destination(media_path: Path, plex_root: Path) -> Optional[Path]:
-    """Return the conforming destination for media directly under a library root."""
+TV_EPISODE_TOKEN = re.compile(
+    r"(?<![A-Z0-9])S(?P<season>\d{2})E\d{2,3}(?:(?:-?E)\d{2,3})*(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _root_media_parts(media_path: Path, plex_root: Path) -> Optional[tuple[str, str]]:
     try:
         relative_path = media_path.resolve().relative_to(plex_root.resolve())
     except ValueError:
@@ -65,7 +71,55 @@ def get_root_media_destination(media_path: Path, plex_root: Path) -> Optional[Pa
     if len(relative_path.parts) != 2:
         return None
 
+    return relative_path.parts
+
+
+def _tv_episode_directory(media_path: Path) -> Optional[Path]:
+    match = TV_EPISODE_TOKEN.search(media_path.stem)
+    if not match:
+        return None
+
+    prefix = media_path.stem[: match.start()].strip(" ._-")
+    prefix = re.sub(r"[._]+", " ", prefix)
+    prefix = re.sub(r"\s+", " ", prefix).strip()
+    if not prefix or not any(character.isalnum() for character in prefix):
+        return None
+
+    year_match = re.fullmatch(r"(?P<title>.+?)[ ._-]+(?P<year>(?:19|20)\d{2})", prefix)
+    if year_match:
+        title = year_match.group("title").strip(" ._-")
+        if not title:
+            return None
+        prefix = f"{title} ({year_match.group('year')})"
+
+    season = int(match.group("season"))
+    return Path(prefix) / f"Season {season:02d}"
+
+
+def get_root_media_destination(media_path: Path, plex_root: Path) -> Optional[Path]:
+    """Return the conforming destination for media directly under a library root."""
+    root_parts = _root_media_parts(media_path, plex_root)
+    if root_parts is None:
+        return None
+
+    library_name, _ = root_parts
+    if library_name.casefold() == "tv":
+        episode_directory = _tv_episode_directory(media_path)
+        if episode_directory is None:
+            return None
+        return media_path.parent / episode_directory / media_path.name
+
     return media_path.parent / media_path.stem / media_path.name
+
+
+def get_root_media_organization_skip_reason(media_path: Path, plex_root: Path) -> Optional[str]:
+    """Explain why root-level media is intentionally not organized."""
+    root_parts = _root_media_parts(media_path, plex_root)
+    if root_parts is None or root_parts[0].casefold() != "tv":
+        return None
+    if get_root_media_destination(media_path, plex_root) is not None:
+        return None
+    return "skipped: ambiguous TV filename (no confident season/episode show prefix)"
 
 
 def collect_media_companions(media_path: Path, media_extensions: set[str]) -> list[Path]:
@@ -109,6 +163,9 @@ def organize_root_media(
     dry_run: bool = False,
 ) -> tuple[bool, str, Path, list[Path]]:
     """Move root-level media and attributable sidecars into a same-named directory."""
+    if media_path.is_symlink():
+        return False, f"Organization source is a symlink: {media_path}", media_path, []
+
     destination = get_root_media_destination(media_path, plex_root)
     if destination is None:
         return True, "Media already has a containing directory", media_path, []
@@ -132,23 +189,71 @@ def organize_root_media(
         )
 
     sources = [media_path, *collect_media_companions(media_path, media_extensions)]
+    symlink_sources = [source for source in sources if source.is_symlink()]
+    if symlink_sources:
+        return False, f"Organization source is a symlink: {symlink_sources[0]}", media_path, []
+
     destinations = [destination.parent / source.name for source in sources]
     destination_dir = destination.parent
+    try:
+        destination_parts = destination_dir.relative_to(media_path.parent).parts
+    except ValueError:
+        return (
+            False,
+            f"Organization destination escapes library root: {destination}",
+            media_path,
+            [],
+        )
 
-    if destination_dir.exists() and not destination_dir.is_dir():
-        return False, f"Organization path is not a directory: {destination_dir}", media_path, []
+    directory = media_path.parent
+    planned_directories = []
+    for part in destination_parts:
+        directory /= part
+        if directory.is_symlink():
+            return False, f"Organization path is a symlink: {directory}", media_path, []
+        if directory.exists() and not directory.is_dir():
+            return False, f"Organization path is not a directory: {directory}", media_path, []
+        if not directory.exists():
+            planned_directories.append(directory)
+
+    resolved_library_root = media_path.parent.resolve()
+    try:
+        destination.resolve(strict=False).relative_to(resolved_library_root)
+    except ValueError:
+        return (
+            False,
+            f"Organization destination escapes library root: {destination}",
+            media_path,
+            [],
+        )
 
     conflicts = [path for path in destinations if path.exists()]
     if conflicts:
         return False, f"Organization destination already exists: {conflicts[0]}", media_path, []
 
+    if destination_dir.exists():
+        destination_same_stem_media = [
+            path
+            for path in destination_dir.iterdir()
+            if path.is_file()
+            and path.suffix.lower() in media_extensions
+            and path.stem.casefold() == media_path.stem.casefold()
+        ]
+        if destination_same_stem_media:
+            return (
+                False,
+                "Media with same stem already exists in organization destination: "
+                f"{destination_same_stem_media[0]}",
+                media_path,
+                [],
+            )
+
     if dry_run:
         return True, f"Would organize into: {destination_dir}", destination, destinations
 
-    created_directory = not destination_dir.exists()
     moved: list[tuple[Path, Path]] = []
     try:
-        destination_dir.mkdir(parents=False, exist_ok=True)
+        destination_dir.mkdir(parents=True, exist_ok=True)
         for source, target in zip(sources, destinations):
             source.rename(target)
             moved.append((source, target))
@@ -159,9 +264,9 @@ def organize_root_media(
                 target.rename(source)
             except Exception as rollback_error:
                 rollback_errors.append(str(rollback_error))
-        if created_directory:
+        for created_directory in reversed(planned_directories):
             try:
-                destination_dir.rmdir()
+                created_directory.rmdir()
             except OSError:
                 pass
         message = f"Organization failed: {e}"

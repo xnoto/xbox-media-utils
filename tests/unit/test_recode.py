@@ -196,7 +196,7 @@ def test_process_file_organizes_compatible_root_media_and_sidecar(tmp_path: Path
     destination = destination_dir / media_path.name
     assert result["status"] == "success"
     assert result["organized_path"] == str(destination)
-    assert result["scan_target"] == str(destination_dir)
+    assert result["scan_target"] == str(library_root)
     assert destination.read_text() == "input"
     assert (destination_dir / subtitle_path.name).read_text() == "subtitle"
     assert not media_path.exists()
@@ -216,6 +216,88 @@ def test_process_file_dry_run_reports_organization_without_moving(tmp_path: Path
     assert result["organization_action"] == f"move into {library_root / 'Movie.2024'}"
     assert media_path.exists()
     assert not (library_root / "Movie.2024").exists()
+
+
+def test_process_file_dry_run_checks_organization_collisions(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "tv"
+    destination_dir = library_root / "The Show" / "Season 01"
+    destination_dir.mkdir(parents=True)
+    media_path = library_root / "The.Show.S01E01.mkv"
+    destination = destination_dir / media_path.name
+    media_path.write_text("source")
+    destination.write_text("existing")
+    info = MediaInfo(path=media_path, video_codec="h264")
+
+    result = recode.process_file(info, library_root=plex_root, dry_run=True)
+
+    assert result["status"] == "failed"
+    assert result["error"] == f"Organization destination already exists: {destination}"
+    assert media_path.read_text() == "source"
+    assert destination.read_text() == "existing"
+
+
+def test_process_file_reports_ambiguous_root_tv_name_without_blocking_recode(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "tv"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Unsorted Recording.mp4"
+    media_path.write_text("input")
+    info = MediaInfo(
+        path=media_path,
+        video_codec="mpeg4",
+        needs_video_recode=True,
+        video_recode_reason="incompatible codec: mpeg4",
+    )
+
+    result = recode.process_file(info, library_root=plex_root, dry_run=True)
+
+    assert result["status"] == "would_process"
+    assert result["organization_action"].startswith("skipped: ambiguous TV filename")
+    assert result["organized_path"] is None
+    assert media_path.exists()
+
+
+def test_process_file_does_not_report_ambiguous_tv_skip_for_compatible_file(tmp_path: Path):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "tv"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Unsorted Recording.mkv"
+    media_path.write_text("input")
+    info = MediaInfo(path=media_path, video_codec="h264")
+
+    result = recode.process_file(info, library_root=plex_root)
+
+    assert result["status"] == "compatible"
+    assert result["organization_action"] == "none"
+    assert media_path.exists()
+
+
+def test_process_file_refuses_nested_mp4_to_mkv_collision(tmp_path: Path, monkeypatch):
+    movie_dir = tmp_path / "movies" / "Movie"
+    movie_dir.mkdir(parents=True)
+    media_path = movie_dir / "Movie.mp4"
+    existing_mkv = movie_dir / "Movie.mkv"
+    media_path.write_text("mp4 source")
+    existing_mkv.write_text("distinct mkv")
+    info = MediaInfo(
+        path=media_path,
+        video_codec="mpeg4",
+        needs_video_recode=True,
+        video_recode_reason="incompatible codec: mpeg4",
+    )
+
+    def unexpected_ffmpeg(*args, **kwargs):
+        raise AssertionError("FFmpeg must not run when the final path already exists")
+
+    monkeypatch.setattr(recode, "run_ffmpeg_with_fallback", unexpected_ffmpeg)
+
+    result = recode.process_file(info)
+
+    assert result["status"] == "failed"
+    assert result["error"] == f"Recode destination already exists: {existing_mkv}"
+    assert media_path.read_text() == "mp4 source"
+    assert existing_mkv.read_text() == "distinct mkv"
 
 
 def test_process_file_recodes_from_organized_path(tmp_path: Path, monkeypatch):
@@ -494,6 +576,25 @@ def test_scan_dovi_backups_includes_only_dv_mkv_files(tmp_path: Path, monkeypatc
     assert [result.path for result in results] == [dv_path]
 
 
+def test_scan_directory_reports_ambiguous_root_tv_organization_skip(
+    tmp_path: Path, monkeypatch, capsys
+):
+    plex_root = tmp_path / "plex"
+    library_root = plex_root / "tv"
+    library_root.mkdir(parents=True)
+    media_path = library_root / "Unsorted Recording.mkv"
+    media_path.write_text("input")
+    monkeypatch.setattr(
+        recode,
+        "probe_file",
+        lambda path: MediaInfo(path=path, video_codec="h264"),
+    )
+
+    recode.scan_directory(library_root, library_root=plex_root)
+
+    assert "ORGANIZE-SKIP(ambiguous TV filename)" in capsys.readouterr().out
+
+
 def configure_process_main(monkeypatch, results: list[MediaInfo]) -> None:
     monkeypatch.setattr(recode, "acquire_lock", lambda path: NullLock())
     monkeypatch.setattr(recode, "scan_directory", lambda path, quiet, library_root=None: results)
@@ -525,6 +626,68 @@ def test_main_scans_successful_process_target(tmp_path: Path, monkeypatch):
 
     recode.main()
 
+    assert scan_calls == [target]
+
+
+def test_main_does_not_select_compatible_ambiguous_root_tv_file(
+    tmp_path: Path, monkeypatch, capsys
+):
+    plex_root = tmp_path / "plex"
+    target = plex_root / "tv"
+    target.mkdir(parents=True)
+    ambiguous = MediaInfo(path=target / "Unsorted Recording.mkv", video_codec="h264")
+    configure_process_main(monkeypatch, [ambiguous])
+
+    def unexpected_process(*args, **kwargs):
+        raise AssertionError("compatible ambiguous TV file must not be selected")
+
+    def unexpected_scan(*args, **kwargs):
+        raise AssertionError("no processing means no Plex scan")
+
+    monkeypatch.setattr(recode, "process_file", unexpected_process)
+    monkeypatch.setattr(recode, "trigger_plex_scan", unexpected_scan)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--plex", str(plex_root)],
+    )
+
+    recode.main()
+
+    assert "No files need processing." in capsys.readouterr().out
+
+
+def test_main_ambiguous_root_tv_file_does_not_suppress_successful_scan(tmp_path: Path, monkeypatch):
+    plex_root = tmp_path / "plex"
+    target = plex_root / "tv"
+    target.mkdir(parents=True)
+    ambiguous = MediaInfo(path=target / "Unsorted Recording.mkv", video_codec="h264")
+    needed = MediaInfo(
+        path=target / "The Show" / "Season 01" / "The.Show.S01E01.mkv",
+        needs_video_recode=True,
+    )
+    configure_process_main(monkeypatch, [ambiguous, needed])
+    process_calls = []
+
+    def fake_process_file(info, *args, **kwargs):
+        process_calls.append(info.path)
+        return {"status": "success", "error": None, "scan_target": str(info.path.parent)}
+
+    monkeypatch.setattr(recode, "process_file", fake_process_file)
+    scan_calls = []
+
+    def fake_trigger_plex_scan(path, quiet=False):
+        scan_calls.append(path)
+        return True
+
+    monkeypatch.setattr(recode, "trigger_plex_scan", fake_trigger_plex_scan)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["xbox-recode", "process", str(target), "--plex", str(plex_root)],
+    )
+
+    recode.main()
+
+    assert process_calls == [needed.path]
     assert scan_calls == [target]
 
 
@@ -561,7 +724,7 @@ def test_main_scans_parent_for_successful_file_and_propagates_failure(tmp_path: 
     assert scan_calls == [target.parent]
 
 
-def test_main_scans_new_directory_for_organized_single_file(tmp_path: Path, monkeypatch):
+def test_main_scans_library_root_for_organized_single_file(tmp_path: Path, monkeypatch):
     plex_root = tmp_path / "plex"
     library_root = plex_root / "movies"
     library_root.mkdir(parents=True)
@@ -581,7 +744,7 @@ def test_main_scans_new_directory_for_organized_single_file(tmp_path: Path, monk
             "status": "success",
             "error": None,
             "organization_action": f"move into {destination_dir}",
-            "scan_target": str(destination_dir),
+            "scan_target": str(library_root),
         }
 
     monkeypatch.setattr(recode, "process_file", fake_process_file)
@@ -600,7 +763,7 @@ def test_main_scans_new_directory_for_organized_single_file(tmp_path: Path, monk
     recode.main()
 
     assert process_calls == [target]
-    assert scan_calls == [destination_dir]
+    assert scan_calls == [library_root]
 
 
 def test_main_does_not_scan_after_partial_failure(tmp_path: Path, monkeypatch):

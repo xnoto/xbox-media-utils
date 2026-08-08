@@ -69,9 +69,9 @@ xbox-recode process /path/to/library --no-plex-scan
 - Audio: Copy already-compatible AAC stereo; recode non-AAC stereo, all mono tracks, and all >2ch tracks to AAC 256k stereo
 - Subtitles: Extract to sidecar files (SRT/ASS), OCR PGS/SUP via pgsrip
 - Dolby Vision: For DoVi Profile 8, create an HDR10-only copy, promote/process it as the main `.mkv`, and archive the original outside the Plex library under the DoVi backup root
-- Organization: Move media directly under a library root, plus attributable sidecars, into a same-named directory
+- Organization: Move movie/other media directly under a library root into a same-stem directory. In a `tv` library, conventional `SxxEyy` names (including specials and multi-episode names) go to `<Show Name>/Season NN`; ambiguous TV names stay at the library root. Media filenames are unchanged, and only attributable same-stem sidecars move with them.
 - Replaces originals after validation
-- After all target files process successfully, triggers one partial Plex scan for the target directory; organized single-file targets scan their new directory
+- After all target files process successfully, triggers one partial Plex scan for the target directory; organized single-file targets scan the original library directory so Plex removes the old root entry and finds the new child
 - Skips the automatic scan for dry runs, failed processing, or when `--no-plex-scan` is used
 
 ### xbox-import
