@@ -108,9 +108,13 @@ targets scan that directory, while single-file targets scan their parent directo
 backup processing does not trigger Plex scans.
 
 Media files directly under `<plex-root>/<library>/` are out of conformance. `xbox-recode process`
-moves those files and attributable same-stem sidecars into `<library>/<media-stem>/` before media
-processing. Dry runs report the move without changing files, collisions fail without overwriting,
-and `process-backups` never reorganizes archive content.
+moves movie/other files and attributable same-stem sidecars into `<library>/<media-stem>/` before
+processing. In the case-insensitive `tv` library, conventional `SxxEyy` filenames, including season
+00 and multi-episode forms, move without filename changes into `<Show Name>/Season NN`; ambiguous TV
+filenames stay at the library root and continue through normal recode processing. Dry runs perform
+the same organization and collision preflight without moving files, collisions fail without
+overwriting, organized single-file runs scan the original library directory, and `process-backups`
+never reorganizes archive content.
 
 ### Lock Files
 

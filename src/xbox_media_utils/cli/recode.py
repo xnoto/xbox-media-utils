@@ -43,6 +43,7 @@ from xbox_media_utils.ffmpeg import run_ffmpeg_with_fallback, validate_output
 from xbox_media_utils.files import (
     collect_media_files,
     get_root_media_destination,
+    get_root_media_organization_skip_reason,
     organize_root_media,
     set_ownership,
 )
@@ -282,9 +283,24 @@ def process_file(
         else get_root_media_destination(info.path, library_root)
     )
     organization_needed = organization_destination is not None
+    organization_skip_reason = None
     if organization_destination:
         result["organization_action"] = f"move into {organization_destination.parent}"
         result["organized_path"] = str(organization_destination)
+    elif library_root is not None and not process_dovi_backup:
+        organization_skip_reason = get_root_media_organization_skip_reason(info.path, library_root)
+
+    if organization_needed and library_root:
+        organized, organization_msg, _, _ = organize_root_media(
+            info.path,
+            library_root,
+            MEDIA_EXTENSIONS,
+            dry_run=True,
+        )
+        if not organized:
+            result["status"] = "failed"
+            result["error"] = organization_msg
+            return result
 
     has_subs = has_extractable_subs(info)
     needs_hdr10 = False if process_dovi_backup else needs_hdr10_copy(info)
@@ -308,6 +324,8 @@ def process_file(
         return result
 
     media_processing_needed = needs_processing(processing_info) or has_subs or needs_hdr10
+    if media_processing_needed and organization_skip_reason:
+        result["organization_action"] = organization_skip_reason
     if not media_processing_needed and not organization_needed:
         result["status"] = "compatible"
         return result
@@ -337,6 +355,19 @@ def process_file(
                 f"(DoVi Profile {info.dovi_profile})"
             )
 
+    prospective_path = organization_destination or info.path
+    if media_processing_needed:
+        final_path = prospective_path.with_suffix(".mkv")
+        output_path = prospective_path.with_suffix(".xbox.mkv")
+        if final_path != prospective_path and final_path.exists():
+            result["status"] = "failed"
+            result["error"] = f"Recode destination already exists: {final_path}"
+            return result
+        if output_path.exists():
+            result["status"] = "failed"
+            result["error"] = f"Recode output already exists: {output_path}"
+            return result
+
     if dry_run:
         result["status"] = "would_process"
         return result
@@ -357,7 +388,6 @@ def process_file(
         processing_info = replace(processing_info, path=organized_path)
         result["path"] = str(info.path)
         result["organized_path"] = str(info.path)
-        result["scan_target"] = str(info.path.parent)
         set_ownership(info.path.parent, plex_user, plex_group)
         log(f"    {organization_msg}", quiet)
 
@@ -593,6 +623,8 @@ def scan_directory(path: Path, quiet: bool = False, library_root: Path | None = 
                 reasons.append("DOVI-P8")
             if library_root and get_root_media_destination(info.path, library_root):
                 reasons.append("ORGANIZE")
+            elif library_root and get_root_media_organization_skip_reason(info.path, library_root):
+                reasons.append("ORGANIZE-SKIP(ambiguous TV filename)")
             if reasons:
                 log(f"  -> {' '.join(reasons)}", quiet)
             else:
