@@ -109,7 +109,6 @@ def test_import_file_refuses_incompatible_format(tmp_path: Path):
     assert result["status"] == "incompatible"
     assert result["action"] == "skip"
     assert "Profile 5" in result["error"]
-    # No file should be written.
     assert not (dest_dir / "movie.mkv").exists()
 
 

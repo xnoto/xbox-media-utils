@@ -30,7 +30,6 @@ class TestGetConfigValue:
 
     def test_default_used_when_no_cli_or_env(self):
         """Default should be used when neither CLI nor env var set."""
-        # Ensure env var not set
         os.environ.pop("TEST_VAR_NONEXISTENT", None)
 
         result = get_config_value(None, "TEST_VAR_NONEXISTENT", "default")
@@ -99,5 +98,4 @@ class TestConfigConstants:
 
     def test_defaults_use_xbox_prefix(self):
         """Default values should use XBOX_ prefix for env vars."""
-        # Check that we're reading from XBOX_ prefixed env vars
         assert "XBOX_" in str(config.DEFAULT_PLEX_ROOT) or config.DEFAULT_PLEX_ROOT == "~/plex"

@@ -59,12 +59,10 @@ class TestAcquireLock:
             except LockAcquisitionError:
                 results.append((should_block, "blocked"))
 
-        # First thread acquires lock
         t1 = threading.Thread(target=acquire_with_result, args=(False,))
         t1.start()
         time.sleep(0.05)  # Ensure t1 acquires first
 
-        # Second thread should fail to acquire
         t2 = threading.Thread(target=acquire_with_result, args=(True,))
         t2.start()
 
@@ -82,7 +80,7 @@ class TestAcquireLock:
             inode = lock_file.stat().st_ino
             with pytest.raises(LockAcquisitionError):
                 with acquire_lock(lock_file):
-                    pass  # Should not reach here
+                    pass
             assert lock_file.exists()
             assert lock_file.stat().st_ino == inode
             assert lock_file.read_text() == str(os.getpid())
@@ -111,11 +109,9 @@ class TestAcquireLock:
         """Should work with both string and Path objects."""
         lock_file = tmp_path / "test.lock"
 
-        # Test with Path object
         with acquire_lock(lock_file):
             assert lock_file.exists()
 
-        # Test with string
         lock_file_str = str(tmp_path / "test2.lock")
         with acquire_lock(lock_file_str):
             assert Path(lock_file_str).exists()
