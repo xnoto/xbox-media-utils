@@ -39,7 +39,6 @@ def acquire_lock(lock_file: str | Path) -> Generator[Optional[IO], None, None]:
     lock_path = Path(lock_file)
 
     try:
-        # Ensure parent directory exists
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Keep a stable inode for flock. The pathname may remain after release;

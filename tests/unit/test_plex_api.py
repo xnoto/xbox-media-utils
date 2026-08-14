@@ -43,7 +43,6 @@ class TestPlexScannerInit:
         """Should raise PlexAuthError when no token available."""
         monkeypatch.delenv("XBOX_PLEX_TOKEN", raising=False)
         monkeypatch.delenv("PLEX_TOKEN", raising=False)
-        # Point to non-existent prefs file
         monkeypatch.setattr(
             "xbox_media_utils.api.plex.DEFAULT_PREFS_PATH",
             str(tmp_path / "nonexistent.xml"),

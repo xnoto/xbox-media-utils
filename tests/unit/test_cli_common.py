@@ -67,7 +67,6 @@ class TestValidatePathExists:
         existing = tmp_path / "exists.txt"
         existing.write_text("test")
 
-        # Should not raise
         validate_path_exists(existing)
 
     def test_exits_for_missing_path(self, tmp_path, capsys):

@@ -205,7 +205,6 @@ class PlexScanner:
         Returns:
             Dict mapping section key to result dict with 'success' and 'message'.
         """
-        # Validate keys exist
         valid_keys = {int(s["key"]) for s in self._get_sections()}
         results = {}
 
