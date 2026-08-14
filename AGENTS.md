@@ -149,6 +149,10 @@ uv run pytest --cov=src/xbox_media_utils
 uv run pre-commit run --all-files
 ```
 
+When updating GitHub Actions, verify that the exact ref exists.
+`astral-sh/setup-uv` publishes full release tags such as `v10.0.0` and does not
+guarantee a moving `v10` alias.
+
 For manual integration testing:
 
 ```bash
