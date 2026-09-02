@@ -20,6 +20,7 @@ SUPPORTED_HEVC_PROFILES = {"main", "main 10"}
 # These are the concrete problem cases seen in the library so far:
 # - Opus: often arrives from yt-dlp/webm downloads and forces playback failures
 # - DTS / DCA: Plex for Xbox may only allow it with passthrough/direct-play paths
+# - PCM: Direct Play on Plex for Xbox does not reliably support PCM audio
 # - TrueHD / MLP / Vorbis: not worth preserving for Xbox-first libraries
 AUDIO_CODECS_REQUIRING_RECODE = {
     "opus",
@@ -31,6 +32,20 @@ AUDIO_CODECS_REQUIRING_RECODE = {
     "dtshd",
     "dtshd_ma",
     "dtshd_hra",
+    "pcm_s8",
+    "pcm_u8",
+    "pcm_s16be",
+    "pcm_s16le",
+    "pcm_s24be",
+    "pcm_s24le",
+    "pcm_s32be",
+    "pcm_s32le",
+    "pcm_f32be",
+    "pcm_f32le",
+    "pcm_f64be",
+    "pcm_f64le",
+    "pcm_bluray",
+    "pcm_dvd",
 }
 
 # Codecs that VAAPI hardware decoding cannot handle (will fallback to software)
