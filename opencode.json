@@ -12,7 +12,6 @@
       "command": ["context-mode"],
       "enabled": true
     },
-    "opencode-docs": { "enabled": false },
     "tmux": { "enabled": false },
     "linear": { "enabled": false },
     "notion": { "enabled": false },
@@ -28,7 +27,6 @@
     "argocd-makeitwork": { "enabled": false }
   },
   "tools": {
-    "opencode-docs_*": false,
     "tmux_*": false,
     "linear_*": false,
     "notion_*": false,
