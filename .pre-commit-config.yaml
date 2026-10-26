@@ -31,7 +31,7 @@ repos:
 
   # Conventional Commits validation (Commitizen)
   - repo: https://github.com/commitizen-tools/commitizen
-    rev: v4.17.0
+    rev: v4.19.3
     hooks:
       - id: commitizen
         stages: [commit-msg]
@@ -45,7 +45,7 @@ repos:
 
   # Python code formatting (Black-compatible Ruff)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.3
+    rev: v0.17.2
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
@@ -53,7 +53,7 @@ repos:
 
   # Python type checking
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
+    rev: v2.4.0
     hooks:
       - id: mypy
         additional_dependencies:
@@ -63,14 +63,14 @@ repos:
 
   # Shell script checking
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
+    rev: v0.11.0.1-1
     hooks:
       - id: shellcheck
         args: [-x]
 
   # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.49.1
+    rev: v0.50.0
     hooks:
       - id: markdownlint
         args: [--fix, --disable, "MD013", "MD040"]
