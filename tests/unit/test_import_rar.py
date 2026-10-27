@@ -421,9 +421,7 @@ def test_generated_intermediate_names_are_reserved_before_import(rar_import, mon
 
 
 @pytest.mark.parametrize("name", ["Movie.en.srt", "Movie.en.2.forced.ass", "Movie.en.sdh.sup"])
-def test_existing_subtitle_sidecars_are_preserved_before_any_import(
-    rar_import, monkeypatch, name
-):
+def test_existing_subtitle_sidecars_are_preserved_before_any_import(rar_import, monkeypatch, name):
     source, plex, calls = rar_import
     (source / "a.rar").write_bytes(b"archive")
     destination = plex / "movies" / source.name
