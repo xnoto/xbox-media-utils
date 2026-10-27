@@ -263,3 +263,106 @@ def test_orphan_continuation_volume_is_not_silently_ignored(rar_import):
     (source / "loose.mkv").write_bytes(b"media")
     run_main(1)
     assert not calls.imports and not calls.scans
+
+
+@pytest.mark.parametrize("operation", ["unlink", "rmtree"])
+def test_cleanup_errors_fail_and_report_retained_stage(rar_import, monkeypatch, capsys, operation):
+    source, _, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    extractor(monkeypatch, calls, {"a.rar": {"a.mkv": b"a"}})
+    if operation == "unlink":
+        normal_unlink = Path.unlink
+
+        def failed_unlink(path, *args, **kwargs):
+            if path.name == "a.mkv" and ".xbox-import-" in str(path):
+                raise OSError("unlink denied")
+            return normal_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", failed_unlink)
+    else:
+        def failed_rmtree(path, *args, **kwargs):
+            raise OSError("rmtree denied")
+
+        monkeypatch.setattr(cli.shutil, "rmtree", failed_rmtree)
+    run_main(1)
+    assert calls.stages[0].exists()
+    output = capsys.readouterr()
+    assert "denied" in output.out + output.err
+    assert not calls.scans
+
+
+def test_extractor_start_error_retains_stage_and_blocks_imports(rar_import, monkeypatch, capsys):
+    source, _, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+
+    def failed_run(*args, **kwargs):
+        raise OSError("cannot start unrar")
+
+    monkeypatch.setattr(cli.subprocess, "run", failed_run)
+    run_main(1)
+    assert "Staged files retained at:" in capsys.readouterr().err
+    assert list(source.parent.glob(".xbox-import-*"))
+    assert not calls.imports and not calls.scans
+
+
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_unsafe_destination_ancestor_blocks_imports(rar_import, monkeypatch, kind):
+    source, plex, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    dest = plex / "movies" / source.name
+    dest.mkdir()
+    if kind == "symlink":
+        (dest / "nested").symlink_to(source, target_is_directory=True)
+    else:
+        (dest / "nested").write_bytes(b"existing")
+    extractor(monkeypatch, calls, {"a.rar": {"nested/a.mkv": b"a"}})
+    run_main(1)
+    assert not calls.imports and not calls.scans
+
+
+def test_nested_file_directory_collision_blocks_all_imports(rar_import, monkeypatch):
+    source, _, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    (source / "b.rar").write_bytes(b"archive")
+    extractor(
+        monkeypatch,
+        calls,
+        {"a.rar": {"movie.mkv": b"a"}, "b.rar": {"movie.mkv/episode.mkv": b"b"}},
+    )
+    run_main(1)
+    assert not calls.imports and not calls.scans
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_invalid_rar_source_blocks_extraction(rar_import, monkeypatch, kind):
+    source, _, calls = rar_import
+    archive = source / "a.rar"
+    if kind == "symlink":
+        target = source / "original.bin"
+        target.write_bytes(b"archive")
+        archive.symlink_to(target)
+    else:
+        archive.mkdir()
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("extracted unsafe source"))
+    run_main(1)
+    assert not calls.imports and not calls.scans
+
+
+def test_archive_without_media_fails_and_retains_outputs(rar_import, monkeypatch, capsys):
+    source, _, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    extractor(monkeypatch, calls, {"a.rar": {"note.txt": b"note"}})
+    run_main(1)
+    assert (calls.stages[0] / "0/note.txt").exists()
+    assert "No media files found" in capsys.readouterr().out
+    assert not calls.imports and not calls.scans
+
+
+@pytest.mark.parametrize("first", ["part1.RAR", "PART01.rar"])
+def test_multipart_first_volume_naming_variants(rar_import, monkeypatch, first):
+    source, _, calls = rar_import
+    (source / f"movie.{first}").write_bytes(b"archive")
+    (source / "movie.PART02.RaR").write_bytes(b"archive")
+    extractor(monkeypatch, calls, {f"movie.{first}": {"movie.mkv": b"media"}})
+    run_main()
+    assert [path.name for path in calls.extract] == [f"movie.{first}"]

@@ -341,7 +341,11 @@ def stage_rar_media(
     """Extract archive sets outside the source and map media to logical source paths."""
     source_root = source.resolve()
     destination = dest_base.resolve()
-    if source_root == destination or source_root in destination.parents or destination in source_root.parents:
+    if (
+        source_root == destination
+        or source_root in destination.parents
+        or destination in source_root.parents
+    ):
         raise RuntimeError("RAR import source and destination must not overlap")
     unrar = shutil.which("unrar")
     if unrar is None:
@@ -376,13 +380,17 @@ def stage_rar_media(
             )
             if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout or "Extraction failed")[-2000:]
-                raise RuntimeError(f"unrar failed for {archive} (exit {completed.returncode}): {detail}")
+                raise RuntimeError(
+                    f"unrar failed for {archive} (exit {completed.returncode}): {detail}"
+                )
             for path in extract_dir.rglob("*"):
                 if path.is_symlink() or not (path.is_file() or path.is_dir()):
                     raise RuntimeError(f"Unsafe RAR output (link or special file): {path}")
                 path.resolve().relative_to(extract_dir)
             for path in collect_media_files(extract_dir, MEDIA_EXTENSIONS):
-                media_paths[path] = archive.parent.relative_to(source) / path.relative_to(extract_dir)
+                media_paths[path] = archive.parent.relative_to(source) / path.relative_to(
+                    extract_dir
+                )
     except (OSError, ValueError, RuntimeError) as error:
         raise RuntimeError(f"{error}\nStaged files retained at: {staging}") from error
     return staging, media_paths
@@ -395,9 +403,11 @@ def preflight_archive_imports(relative_paths: dict[Path, Path], dest_base: Path)
         # Recode may normalize any input extension to .mkv; reserve both names.
         targets = {dest_base / relative, dest_base / relative.with_suffix(".mkv")}
         for target in targets:
-            previous = reserved.get(target)
-            if previous is not None and previous != source_path:
-                raise RuntimeError(f"RAR import destination collision: {target}")
+            for existing, previous in reserved.items():
+                if previous != source_path and (
+                    target == existing or target in existing.parents or existing in target.parents
+                ):
+                    raise RuntimeError(f"RAR import destination collision: {target}")
             reserved[target] = source_path
             if target.exists() or target.is_symlink():
                 raise RuntimeError(f"RAR import destination already exists: {target}")
