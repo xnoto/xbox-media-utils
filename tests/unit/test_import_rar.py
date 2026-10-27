@@ -50,7 +50,15 @@ def extractor(monkeypatch, calls, contents):
         calls.extract.append(archive)
         calls.stages.append(stage.parent)
         assert argv[:9] == [
-            "/usr/bin/unrar", "x", "-cfg-", "-ol-", "-o-", "-p-", "-idq", "--", str(archive)
+            "/usr/bin/unrar",
+            "x",
+            "-cfg-",
+            "-ol-",
+            "-o-",
+            "-p-",
+            "-idq",
+            "--",
+            str(archive),
         ]
         assert archive.is_absolute()
         assert argv[-1].endswith(os.sep)
@@ -80,7 +88,11 @@ def test_nested_archive_import_preserves_source_and_cleans_stage(rar_import, mon
     archive.write_bytes(b"original archive")
     loose = source / "loose.mkv"
     loose.write_bytes(b"original media")
-    extractor(monkeypatch, calls, {archive.name: {"Episode/episode.mkv": b"extracted", "note.txt": b"note"}})
+    extractor(
+        monkeypatch,
+        calls,
+        {archive.name: {"Episode/episode.mkv": b"extracted", "note.txt": b"note"}},
+    )
     run_main()
     dest = plex / "movies" / source.name
     assert (dest / "Season 01/Episode/episode.mkv").read_bytes() == b"extracted"
@@ -88,7 +100,9 @@ def test_nested_archive_import_preserves_source_and_cleans_stage(rar_import, mon
     assert archive.read_bytes() == b"original archive"
     assert loose.read_bytes() == b"original media"
     assert sorted(path.relative_to(source) for path in source.rglob("*")) == [
-        Path("Season 01"), Path("Season 01/episode.RaR"), Path("loose.mkv")
+        Path("Season 01"),
+        Path("Season 01/episode.RaR"),
+        Path("loose.mkv"),
     ]
     assert calls.scans == [dest]
     assert all(not stage.exists() for stage in calls.stages)
@@ -129,7 +143,11 @@ def test_failed_staged_media_remains_but_successful_media_is_removed(
     monkeypatch.setattr(cli, "import_file", import_with_failure)
     if failure == "probe":
         monkeypatch.setattr(
-            cli, "probe_file", lambda path: MediaInfo(path=path, probe_error="bad" if path.name == failed_name else None)
+            cli,
+            "probe_file",
+            lambda path: MediaInfo(
+                path=path, probe_error="bad" if path.name == failed_name else None
+            ),
         )
     run_main(1)
     stage = calls.stages[0]
@@ -180,9 +198,15 @@ def test_dry_run_reports_archives_without_extraction_or_staging(
         (source / "loose.mkv").write_bytes(b"media")
     monkeypatch.setattr(sys, "argv", [*sys.argv, "--dry-run"])
     monkeypatch.setattr(cli.shutil, "which", lambda name: None)
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("extracted during dry run"))
-    monkeypatch.setattr(cli.tempfile, "mkdtemp", lambda *a, **k: pytest.fail("staged during dry run"))
-    monkeypatch.setattr(cli, "write_log_entry", lambda *a, **k: pytest.fail("logged during dry run"))
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *a, **k: pytest.fail("extracted during dry run")
+    )
+    monkeypatch.setattr(
+        cli.tempfile, "mkdtemp", lambda *a, **k: pytest.fail("staged during dry run")
+    )
+    monkeypatch.setattr(
+        cli, "write_log_entry", lambda *a, **k: pytest.fail("logged during dry run")
+    )
     run_main()
     assert "Would extract RAR" in capsys.readouterr().out
     assert len(calls.imports) == int(with_loose_media)
@@ -195,7 +219,8 @@ def test_collisions_block_imports(rar_import, monkeypatch, collision):
     (source / "a.rar").write_bytes(b"archive")
     contents = {"a.rar": {"movie.mkv": b"a"}}
     if collision in {"loose", "extension"}:
-        (source / ("movie.mp4" if collision == "extension" else "movie.mkv")).write_bytes(b"original")
+        name = "movie.mp4" if collision == "extension" else "movie.mkv"
+        (source / name).write_bytes(b"original")
     elif collision == "archive":
         (source / "b.rar").write_bytes(b"archive")
         contents["b.rar"] = {"movie.mkv": b"b"}
@@ -242,8 +267,12 @@ def test_standalone_media_does_not_inspect_neighbor_archives(rar_import, monkeyp
     media = source / "movie.mkv"
     media.write_bytes(b"media")
     (source / "movie.rar").write_bytes(b"archive")
-    monkeypatch.setattr(sys, "argv", ["xbox-import", str(media), "--plex", str(plex), "--no-plex-scan"])
-    monkeypatch.setattr(cli, "discover_rar_archives", lambda path: pytest.fail("inspected neighbors"))
+    monkeypatch.setattr(
+        sys, "argv", ["xbox-import", str(media), "--plex", str(plex), "--no-plex-scan"]
+    )
+    monkeypatch.setattr(
+        cli, "discover_rar_archives", lambda path: pytest.fail("inspected neighbors")
+    )
     run_main()
     assert len(calls.imports) == 1
     assert media.exists() and not calls.scans
@@ -252,7 +281,11 @@ def test_standalone_media_does_not_inspect_neighbor_archives(rar_import, monkeyp
 def test_archive_source_destination_overlap_rejected(rar_import, monkeypatch):
     source, _, calls = rar_import
     (source / "a.rar").write_bytes(b"archive")
-    monkeypatch.setattr(sys, "argv", ["xbox-import", str(source), "--plex", str(source), "--library", "movies"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["xbox-import", str(source), "--plex", str(source), "--library", "movies"],
+    )
     run_main(1)
     assert not calls.imports and not calls.scans
 
@@ -280,6 +313,7 @@ def test_cleanup_errors_fail_and_report_retained_stage(rar_import, monkeypatch, 
 
         monkeypatch.setattr(Path, "unlink", failed_unlink)
     else:
+
         def failed_rmtree(path, *args, **kwargs):
             raise OSError("rmtree denied")
 
@@ -343,7 +377,9 @@ def test_invalid_rar_source_blocks_extraction(rar_import, monkeypatch, kind):
         archive.symlink_to(target)
     else:
         archive.mkdir()
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("extracted unsafe source"))
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *a, **k: pytest.fail("extracted unsafe source")
+    )
     run_main(1)
     assert not calls.imports and not calls.scans
 
