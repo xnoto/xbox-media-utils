@@ -105,6 +105,22 @@ xbox-import Movie/ --no-plex-scan
 - After all files import successfully, triggers one partial Plex scan for the imported directory
 - Skips the automatic scan for dry runs, failed imports, or when `--no-plex-scan` is used
 
+### RAR archives
+
+Directory imports discover RAR archives recursively and extract them with `unrar x` before
+importing. Extraction uses a private `.xbox-import-*` staging directory beside the source;
+original archives and existing source files are preserved. Archive paths retain their directory
+structure. Destination collisions or extraction errors stop the batch before any imports.
+
+Each successfully imported staged media file is removed afterward. Failed, incompatible, or skipped
+media remains in staging, and the staging location is printed. Other extracted artifacts are removed
+only when all staged media has imported successfully. A failed Plex scan does not undo media imports
+or their cleanup.
+
+For archives, `--dry-run` only reports what would be extracted: it does not extract, create staging,
+or inspect archived media compatibility. Loose media is still previewed normally. Standalone media
+imports ignore neighboring archives.
+
 ### xbox-plex-scan
 
 Trigger Plex library scans via HTTP API. Useful for manual scans after moving files or imports made
@@ -152,6 +168,7 @@ XBOX_PLEX_PREFS_PATH=/var/lib/plexmediaserver/...  # Path to Preferences.xml
 ## Requirements
 
 - Python 3.9+
+- Host-provided `unrar` with `-ol-` support for RAR imports only. Keep it security-updated; staging is not a sandbox for malicious archives. The source parent must be writable and have enough free space for extraction.
 - MKVToolNix (`mkvmerge`) for timestamp-safe Matroska remuxing
 - ffmpeg with VAAPI support (optional but recommended)
 - AMD/Intel GPU with VAAPI HEVC encode support
