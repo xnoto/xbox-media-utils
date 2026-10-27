@@ -408,10 +408,11 @@ def preflight_archive_imports(relative_paths: dict[Path, Path], dest_base: Path)
         output_dir = dest_base / relative.parent
         if output_dir.is_dir():
             for existing in output_dir.iterdir():
-                if (
-                    existing.name.startswith(relative.stem + ".en.")
-                    and existing.suffix in {".srt", ".ass", ".sup"}
-                ):
+                if existing.name.startswith(relative.stem + ".en.") and existing.suffix in {
+                    ".srt",
+                    ".ass",
+                    ".sup",
+                }:
                     raise RuntimeError(f"RAR import destination already exists: {existing}")
         for target in targets:
             for existing, previous in reserved.items():
