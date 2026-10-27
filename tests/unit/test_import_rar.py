@@ -402,3 +402,36 @@ def test_multipart_first_volume_naming_variants(rar_import, monkeypatch, first):
     extractor(monkeypatch, calls, {f"movie.{first}": {"movie.mkv": b"media"}})
     run_main()
     assert [path.name for path in calls.extract] == [f"movie.{first}"]
+
+
+@pytest.mark.parametrize("suffix", [".importing.mkv", ".HDR10.mkv", ".HDR10.tmp.mkv"])
+def test_generated_intermediate_names_are_reserved_before_import(rar_import, monkeypatch, suffix):
+    source, _, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    extractor(
+        monkeypatch,
+        calls,
+        {"a.rar": {"Movie.mkv": b"main", "Movie" + suffix: b"must not overwrite"}},
+    )
+    run_main(1)
+    assert not calls.imports and not calls.scans
+    stage = calls.stages[0] / "0"
+    assert (stage / "Movie.mkv").read_bytes() == b"main"
+    assert (stage / ("Movie" + suffix)).read_bytes() == b"must not overwrite"
+
+
+@pytest.mark.parametrize("name", ["Movie.en.srt", "Movie.en.2.forced.ass", "Movie.en.sdh.sup"])
+def test_existing_subtitle_sidecars_are_preserved_before_any_import(
+    rar_import, monkeypatch, name
+):
+    source, plex, calls = rar_import
+    (source / "a.rar").write_bytes(b"archive")
+    destination = plex / "movies" / source.name
+    destination.mkdir()
+    sidecar = destination / name
+    sidecar.write_bytes(b"existing subtitle")
+    extractor(monkeypatch, calls, {"a.rar": {"Movie.mkv": b"media"}})
+    run_main(1)
+    assert not calls.imports and not calls.scans
+    assert sidecar.read_bytes() == b"existing subtitle"
+    assert (calls.stages[0] / "0/Movie.mkv").read_bytes() == b"media"

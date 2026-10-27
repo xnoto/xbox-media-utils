@@ -400,8 +400,19 @@ def preflight_archive_imports(relative_paths: dict[Path, Path], dest_base: Path)
     """Refuse ambiguous or existing outputs before importing an archive batch."""
     reserved: dict[Path, Path] = {}
     for source_path, relative in relative_paths.items():
-        # Recode may normalize any input extension to .mkv; reserve both names.
-        targets = {dest_base / relative, dest_base / relative.with_suffix(".mkv")}
+        targets = {dest_base / relative}
+        targets.update(
+            dest_base / relative.with_name(relative.stem + suffix)
+            for suffix in (".mkv", ".importing.mkv", ".HDR10.mkv", ".HDR10.tmp.mkv")
+        )
+        output_dir = dest_base / relative.parent
+        if output_dir.is_dir():
+            for existing in output_dir.iterdir():
+                if (
+                    existing.name.startswith(relative.stem + ".en.")
+                    and existing.suffix in {".srt", ".ass", ".sup"}
+                ):
+                    raise RuntimeError(f"RAR import destination already exists: {existing}")
         for target in targets:
             for existing, previous in reserved.items():
                 if previous != source_path and (
