@@ -168,7 +168,7 @@ XBOX_PLEX_PREFS_PATH=/var/lib/plexmediaserver/...  # Path to Preferences.xml
 ## Requirements
 
 - Python 3.9+
-- Host-provided `unrar` with `-ol-` support for RAR imports only. Keep it security-updated; staging is not a sandbox for malicious archives. The source parent must be writable and have enough free space for extraction.
+- Host-provided **RARLAB `unrar`** (the proprietary freeware vendor version), with `-ol-` support, for RAR imports only. `unrar-free`, 7-Zip, `unar`, and libarchive are not supported substitutes. Keep the vendor tool security-updated; staging is not a sandbox for malicious archives. The source parent must be writable and have enough free space for extraction.
 - MKVToolNix (`mkvmerge`) for timestamp-safe Matroska remuxing
 - ffmpeg with VAAPI support (optional but recommended)
 - AMD/Intel GPU with VAAPI HEVC encode support
