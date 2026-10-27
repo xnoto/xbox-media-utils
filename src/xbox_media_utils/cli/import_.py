@@ -7,8 +7,12 @@ Unlike recode (which processes in-place), this COPIES from source to destination
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -309,6 +313,136 @@ def import_file(
     return result
 
 
+def discover_rar_archives(source: Path) -> list[Path]:
+    """Find archive sets, leaving continuation volumes for unrar to consume."""
+    archives = sorted(path for path in source.rglob("*") if path.suffix.lower() == ".rar")
+    first_volumes = set()
+    for archive in archives:
+        match = re.fullmatch(r"(.+)\.part(\d+)\.rar", archive.name, re.IGNORECASE)
+        if match and int(match[2]) == 1:
+            first_volumes.add((archive.parent, match[1].casefold()))
+    selected = []
+    for archive in archives:
+        if archive.is_symlink() or not archive.is_file():
+            raise RuntimeError(f"RAR source is not a regular file: {archive}")
+        archive.resolve().relative_to(source.resolve())
+        match = re.fullmatch(r"(.+)\.part(\d+)\.rar", archive.name, re.IGNORECASE)
+        if match and int(match[2]) != 1:
+            if (archive.parent, match[1].casefold()) not in first_volumes:
+                raise RuntimeError(f"Missing first RAR volume for: {archive}")
+            continue
+        selected.append(archive)
+    return selected
+
+
+def stage_rar_media(
+    source: Path, dest_base: Path, archives: list[Path]
+) -> tuple[Path, dict[Path, Path]]:
+    """Extract archive sets outside the source and map media to logical source paths."""
+    source_root = source.resolve()
+    destination = dest_base.resolve()
+    if (
+        source_root == destination
+        or source_root in destination.parents
+        or destination in source_root.parents
+    ):
+        raise RuntimeError("RAR import source and destination must not overlap")
+    unrar = shutil.which("unrar")
+    if unrar is None:
+        raise RuntimeError("RAR imports require host-provided unrar with -ol- support")
+    staging = Path(tempfile.mkdtemp(prefix=".xbox-import-", dir=source_root.parent))
+    print(f"Archive staging: {staging}")
+    media_paths: dict[Path, Path] = {}
+    try:
+        for index, archive in enumerate(archives):
+            extract_dir = staging / str(index)
+            extract_dir.mkdir()
+            print(f"Extracting RAR: {archive}")
+            completed = subprocess.run(
+                [
+                    unrar,
+                    "x",
+                    "-cfg-",
+                    "-ol-",
+                    "-o-",
+                    "-p-",
+                    "-idq",
+                    "--",
+                    str(archive.resolve()),
+                    str(extract_dir) + os.sep,
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                cwd=extract_dir,
+                check=False,
+            )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "Extraction failed")[-2000:]
+                raise RuntimeError(
+                    f"unrar failed for {archive} (exit {completed.returncode}): {detail}"
+                )
+            for path in extract_dir.rglob("*"):
+                if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                    raise RuntimeError(f"Unsafe RAR output (link or special file): {path}")
+                path.resolve().relative_to(extract_dir)
+            for path in collect_media_files(extract_dir, MEDIA_EXTENSIONS):
+                media_paths[path] = archive.parent.relative_to(source) / path.relative_to(
+                    extract_dir
+                )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise RuntimeError(f"{error}\nStaged files retained at: {staging}") from error
+    return staging, media_paths
+
+
+def preflight_archive_imports(relative_paths: dict[Path, Path], dest_base: Path) -> None:
+    """Refuse ambiguous or existing outputs before importing an archive batch."""
+    reserved: dict[Path, Path] = {}
+    for source_path, relative in relative_paths.items():
+        targets = {dest_base / relative}
+        targets.update(
+            dest_base / relative.with_name(relative.stem + suffix)
+            for suffix in (".mkv", ".importing.mkv", ".HDR10.mkv", ".HDR10.tmp.mkv")
+        )
+        output_dir = dest_base / relative.parent
+        if output_dir.is_dir():
+            for existing in output_dir.iterdir():
+                if existing.name.startswith(relative.stem + ".en.") and existing.suffix in {
+                    ".srt",
+                    ".ass",
+                    ".sup",
+                }:
+                    raise RuntimeError(f"RAR import destination already exists: {existing}")
+        for target in targets:
+            for existing, previous in reserved.items():
+                if previous != source_path and (
+                    target == existing or target in existing.parents or existing in target.parents
+                ):
+                    raise RuntimeError(f"RAR import destination collision: {target}")
+            reserved[target] = source_path
+            if target.exists() or target.is_symlink():
+                raise RuntimeError(f"RAR import destination already exists: {target}")
+            current = target.parent
+            while current != dest_base.parent:
+                if current.is_symlink() or (current.exists() and not current.is_dir()):
+                    raise RuntimeError(f"Unsafe RAR import destination directory: {current}")
+                current = current.parent
+
+
+def finish_archive_staging(staging: Path, pending: set[Path]) -> bool:
+    """Remove a completed private stage, retaining anything not successfully imported."""
+    if pending:
+        print(f"Staged files retained at: {staging}")
+        return True
+    try:
+        shutil.rmtree(staging)
+    except OSError as error:
+        print(f"Error cleaning archive staging {staging}: {error}", file=sys.stderr)
+        return False
+    return True
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -368,11 +502,41 @@ def main():
         # import can be scanned without refreshing the entire library.
         dest_base = library_path / args.source.stem
 
-    files = collect_media_files(args.source, MEDIA_EXTENSIONS)
+    staging: Path | None = None
+    staged_paths: dict[Path, Path] = {}
+    archives: list[Path] = []
+    try:
+        if source_is_dir:
+            archives = discover_rar_archives(args.source)
+        if args.dry_run:
+            for archive in archives:
+                print(f"Would extract RAR before importing: {archive}")
+        elif archives:
+            staging, staged_paths = stage_rar_media(args.source, dest_base, archives)
+        files = collect_media_files(args.source, MEDIA_EXTENSIONS)
+        relative_paths = {
+            path: path.relative_to(args.source) if source_is_dir else Path(path.name)
+            for path in files
+        }
+        relative_paths.update(staged_paths)
+        if staging is not None:
+            preflight_archive_imports(relative_paths, dest_base)
+        files = sorted(relative_paths, key=lambda path: str(relative_paths[path]))
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Error preparing import: {error}", file=sys.stderr)
+        if staging is not None:
+            print(f"Staged files retained at: {staging}")
+        sys.exit(1)
 
     if not files:
+        if staging is not None:
+            print(f"Staged files retained at: {staging}")
+        if args.dry_run and archives:
+            print("Archived media will be discovered and checked during the real import.")
+            sys.exit(0)
         print(f"No media files found in: {args.source}")
         sys.exit(1)
+    staged_pending = set(staged_paths)
 
     print(f"Source: {args.source}")
     print(f"Library: {library_name} ({library_path})")
@@ -385,10 +549,12 @@ def main():
 
     for idx, filepath in enumerate(files):
         if filepath.name.endswith(".HDR10.mkv"):
+            if filepath in staged_pending:
+                failed += 1
             continue
 
         if source_is_dir:
-            rel_path = filepath.relative_to(args.source)
+            rel_path = relative_paths[filepath]
             dest_dir = dest_base / rel_path.parent
         else:
             dest_dir = dest_base
@@ -434,6 +600,13 @@ def main():
             print(f"    -> {result['action']}: {result['destination']}")
             success += 1
             scan_target = dest_base
+            if filepath in staged_pending:
+                try:
+                    filepath.unlink()
+                    staged_pending.remove(filepath)
+                except OSError as error:
+                    print(f"    ERROR cleaning staged media {filepath}: {error}")
+                    failed += 1
         elif result["status"] == "would_import":
             print(f"    -> Would {result['action']}: {result['destination']}")
             if result.get("dovi_action"):
@@ -462,6 +635,9 @@ def main():
         else:
             print(f"    X Failed: {result.get('error')}")
             failed += 1
+
+    if staging is not None and not finish_archive_staging(staging, staged_pending):
+        failed += 1
 
     print()
     print(f"Complete: {success} succeeded, {failed} failed")
