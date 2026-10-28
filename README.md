@@ -126,8 +126,8 @@ not compared byte-for-byte with its source. Unknown existing destinations are ne
 Receipt errors, changed inputs or outputs, and permission failures stop the operation for review.
 Do not delete an actively used lock pathname or move/remove receipt state to bypass a conflict.
 
-Cleanup and Plex scanning are separate from import completion. Successfully imported staged media
-can be removed; manually extracted originals remain untouched. Pending cleanup or scanning can be
+Cleanup and Plex scanning are separate from import completion. After all staged imports are complete
+and verified, private staging is removed; manually extracted originals remain untouched. Pending cleanup or scanning can be
 retried without repeating a verified import. A failed Plex scan does not undo imported files.
 Staging and receipt storage need writable destination/backup parent directories and enough free
 space. State is private to its creating account: resume with that same account. A different uid,
