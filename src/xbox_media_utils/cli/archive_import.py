@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import uuid
 import warnings
 import zlib
@@ -59,6 +60,62 @@ def check_path(path: Path, directory: bool = False, missing: bool = False) -> No
             raise RuntimeError(f"Unsafe import path: {parent}")
 
 
+def progress(message: str) -> None:
+    print(message, flush=True)
+
+
+def file_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+class Verification:
+    """Invocation-only digests; identity guards detect ordinary changes, not immutable content."""
+
+    def __init__(self, source: Path):
+        self.source = source
+        self.identities = self.tree()
+        self.digests: dict[Path, dict] = {}
+
+    def tree(self) -> dict[Path, tuple[int, ...]]:
+        check_path(self.source, directory=True)
+        root = self.source.lstat()
+        result: dict[Path, tuple[int, ...]] = {self.source: (root.st_dev, root.st_ino)}
+
+        def failed(error):
+            raise error
+
+        for current, dirs, files in os.walk(self.source, followlinks=False, onerror=failed):
+            for name in dirs:
+                path = Path(current) / name
+                check_path(path, directory=True)
+                value = path.lstat()
+                result[path] = (value.st_dev, value.st_ino)
+            for name in files:
+                path = Path(current) / name
+                check_path(path)
+                result[path] = file_identity(path.lstat())
+        return result
+
+    def unchanged(self, path: Path) -> None:
+        check_path(path)
+        if file_identity(path.lstat()) != self.identities.get(path):
+            raise RuntimeError(f"Source/archive changed; refusing digest reuse: {path}")
+
+    def read(self, path: Path) -> dict:
+        if self.source not in path.parents:
+            return digest(path)
+        self.unchanged(path)
+        if path not in self.digests:
+            value = digest(path)
+            self.unchanged(path)
+            self.digests[path] = value
+        return self.digests[path]
+
+    def guard(self) -> None:
+        if self.tree() != self.identities:
+            raise RuntimeError("Source/archive changed; publication, cleanup and scan deferred")
+
+
 def digest(path: Path) -> dict:
     """Hash bounded chunks and detect replacement or ordinary concurrent changes."""
     check_path(path)
@@ -67,6 +124,8 @@ def digest(path: Path) -> dict:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode):
             raise RuntimeError(f"Not a regular file: {path}")
+        started = last_report = time.monotonic()
+        progress(f"[verification] Hashing {path}: 0/{before.st_size} bytes")
         sha = hashlib.sha256()
         crc = 0
         size = 0
@@ -74,6 +133,11 @@ def digest(path: Path) -> dict:
             sha.update(block)
             crc = zlib.crc32(block, crc)
             size += len(block)
+            now = time.monotonic()
+            if now - last_report >= 1:
+                rate = size / max(now - started, 0.001) / (1024 * 1024)
+                progress(f"[verification] {path}: {size}/{before.st_size} bytes ({rate:.1f} MiB/s)")
+                last_report = now
         after = os.fstat(stream.fileno())
     current = path.lstat()
     fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
@@ -81,13 +145,15 @@ def digest(path: Path) -> dict:
         getattr(after, key) != getattr(current, key) for key in fields
     ):
         raise RuntimeError(f"File changed while hashing: {path}")
+    rate = size / max(time.monotonic() - started, 0.001) / (1024 * 1024)
+    progress(f"[verification] Verified {path}: {size}/{before.st_size} bytes ({rate:.1f} MiB/s)")
     return {"sha256": sha.hexdigest(), "size": size, "crc": crc & 0xFFFFFFFF}
 
 
-def matches(path: Path, member: dict) -> bool:
+def matches(path: Path, member: dict, verification: Verification | None = None) -> bool:
     if not path.exists() and not path.is_symlink():
         return False
-    value = digest(path)
+    value = verification.read(path) if verification is not None else digest(path)
     return value["size"] == member["size"] and value["crc"] == member["crc"]
 
 
@@ -117,21 +183,22 @@ def vendor_unrar() -> str:
     return executable
 
 
-def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
-    """Read strict metadata, complete volume hashes, and all loose-media hashes."""
-    # Reject links/special files before rarfile can follow a continuation volume.
-    for current, dirs, files in os.walk(source, followlinks=False):
-        for name in dirs:
-            check_path(Path(current) / name, directory=True)
-        for name in files:
-            check_path(Path(current) / name)
-    sets = []
+def inventory(
+    source: Path,
+    archives: list[Path],
+    verification: Verification | None = None,
+    preflight=None,
+) -> tuple[dict, dict]:
+    """Inspect strict metadata and preflight before the invocation's full content inventory."""
+    progress("[inventory] Inspecting archive metadata and source paths")
+    verification = verification if verification is not None else Verification(source)
+    sets: list[dict] = []
     members = {}
     logical_files = set()
     logical_dirs = set()
     for archive in archives:
         check_path(archive)
-        first_hash = digest(archive)
+        verification.unchanged(archive)
         split_name = None
 
         def inspect_header(header):
@@ -176,15 +243,14 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
             raise RuntimeError("Incomplete multipart member")
         if not volumes or volumes[0] != archive:
             raise RuntimeError(f"Invalid RAR volume inventory: {archive}")
-        volume_hashes = {}
+        volume_hashes: dict[str, dict] = {}
         for volume in volumes:
             check_path(volume)
             volume.relative_to(source)
             if volume.parent != archive.parent:
                 raise RuntimeError(f"Unexpected RAR volume location: {volume}")
-            volume_hashes[str(volume.relative_to(source))] = digest(volume)
-        if digest(archive) != first_hash:
-            raise RuntimeError(f"Archive changed during metadata inspection: {archive}")
+            volume_hashes[str(volume.relative_to(source))] = {}
+        verification.unchanged(archive)
         media_count = 0
         for info in infos:
             name = info.filename.rstrip("/") if info.is_dir() else info.filename
@@ -233,14 +299,14 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
             if str(parent) != "."
         ):
             raise RuntimeError(f"RAR file/directory collision: {name}")
-    loose = {}
+    loose: dict[str, dict] = {}
     for path in sorted(source.rglob("*")):
         if path.suffix.lower() not in MEDIA_EXTENSIONS or is_sample_file(path):
             continue
         loose_name = str(safe_relative(path.relative_to(source).as_posix()))
-        loose[loose_name] = digest(path)
+        loose[loose_name] = {}
         if loose_name not in members:
-            members[loose_name] = {**loose[loose_name], "archive": None, "member": loose_name}
+            members[loose_name] = {"archive": None, "member": loose_name}
     if not members:
         raise RuntimeError("No media files found")
     archive_paths = sorted(
@@ -248,6 +314,19 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
         for path in source.rglob("*")
         if path.suffix.lower() == ".rar" or re.fullmatch(r"\.[r-z]\d{2}", path.suffix.lower())
     )
+    verification.guard()
+    if preflight is not None:
+        preflight(members)
+    progress("[inventory] Hashing archive volumes and loose media (fresh this invocation)")
+    for archive_set in sets:
+        for name in archive_set["volumes"]:
+            archive_set["volumes"][name] = verification.read(source / name)
+    for name in loose:
+        loose[name] = verification.read(source / name)
+        if members[name]["archive"] is None:
+            members[name] = {**loose[name], "archive": None, "member": name}
+    verification.guard()
+    progress("[inventory] Full content inventory verified")
     return {
         "sets": sets,
         "loose": loose,
@@ -631,6 +710,7 @@ def run_archive_import(
     use_hardware: bool = True,
 ) -> int:
     """Return CLI status; caller reports errors without discarding recovery state."""
+    progress(f"[inventory] Preparing RAR import: {source}")
     for path in (source, dest, plex, backup):
         check_path(path.absolute(), directory=True, missing=True)
     source = Path(os.path.abspath(source))
@@ -652,8 +732,25 @@ def run_archive_import(
     state = dest.parent / ".xbox-import-state" / key
     backup_state = backup / ".xbox-import-state" / key
 
+    for root in (state, backup_state):
+        for path in (root.parent, root):
+            check_path(path, directory=True, missing=True)
+            if path.exists():
+                state_stat = path.lstat()
+                if state_stat.st_uid != os.geteuid() or state_stat.st_mode & 0o077:
+                    raise RuntimeError(f"Unsafe state directory: {path}")
+    receipt_file = state / "receipt.json"
+    if receipt_file.exists() or receipt_file.is_symlink():
+        private_file(receipt_file)
+    verification = Verification(source)
+
+    def preflight(members):
+        # Receipt presence only defers conflict checks; it grants no authority.
+        if not receipt_file.exists() and not receipt_file.is_symlink():
+            reserve_outputs(members, dest, backup, base_relative, {"jobs": {}})
+
     def plan():
-        items, members = inventory(source, archives)
+        items, members = inventory(source, archives, verification, preflight)
         manifest = {
             "source": str(source),
             "destination": str(dest),
@@ -666,12 +763,6 @@ def run_archive_import(
 
     if dry_run:
         manifest, members = plan()
-        if state.exists() or state.is_symlink():
-            check_path(state, directory=True)
-            for path in (state.parent, state):
-                state_stat = path.lstat()
-                if state_stat.st_uid != os.geteuid() or state_stat.st_mode & 0o077:
-                    raise RuntimeError(f"Unsafe state directory: {path}")
         receipt = load_receipt(state, manifest, members)
         reserve_outputs(members, dest, backup, base_relative, receipt)
         for name, member in members.items():
@@ -679,11 +770,12 @@ def run_archive_import(
             if job and job["phase"] == "complete":
                 for artifact in job["artifacts"]:
                     verify_artifact(artifact_target(artifact, dest, backup), artifact)
-                print(f"Would skip verified completed import: {name}")
-            elif matches(source / name, member):
-                print(f"Would reuse verified loose media and import: {name}")
+                progress(f"Would skip verified completed import: {name}")
+            elif matches(source / name, member, verification):
+                progress(f"Would reuse verified loose media and import: {name}")
             else:
-                print(f"Would extract RAR to private staging and import: {name}")
+                progress(f"Would extract RAR to private staging and import: {name}")
+        verification.guard()
         return 0
 
     executable = vendor_unrar()
@@ -701,13 +793,17 @@ def run_archive_import(
             and loose[name]["size"] == member["size"]
             and loose[name]["crc"] == member["crc"]
         ]
-        print(f"Verified loose media available for reuse (no extraction): {len(reusable)}")
+        progress(f"Verified loose media available for reuse (no extraction): {len(reusable)}")
         reserve_outputs(members, dest, backup, base_relative, receipt)
         # Independently rehash completed artifacts before deciding to skip any work.
         for job in receipt["jobs"].values():
             if job["phase"] == "complete":
                 for artifact in job["artifacts"]:
                     verify_artifact(artifact_target(artifact, dest, backup), artifact)
+        for name, job in receipt["jobs"].items():
+            if job["phase"] == "complete":
+                progress(f"[reuse] Already verified; skipping completed import: {name}")
+        verification.guard()
         if receipt["work"] is None:
             receipt["work"] = {"token": uuid.uuid4().hex, "primary": None, "backup": None}
             save_receipt(state, receipt)
@@ -720,14 +816,14 @@ def run_archive_import(
             if receipt["work"]["primary"] is None and work.exists():
                 if receipt["jobs"] or receipt["extract"]:
                     raise RuntimeError(f"Unowned stage retained: {work}")
-                print(f"Unowned interrupted stage preserved: {work}")
+                progress(f"Unowned interrupted stage preserved: {work}")
                 receipt["work"]["token"] = uuid.uuid4().hex
                 save_receipt(state, receipt)
                 backup_work = work_root(backup_state, receipt["work"])
             if any(receipt["jobs"].get(name, {}).get("phase") == "prepared" for name in pending):
                 owned_work(state, receipt["work"], "primary")
             work = create_work(state, receipt, "primary", state)
-            print(f"Archive staging: {work}")
+            progress(f"Archive staging: {work}")
         selected = {}
         # Prepare all extraction sets before importing any new media.
         for name in pending:
@@ -736,7 +832,8 @@ def run_archive_import(
                 continue
             member = members[name]
             loose = source / name
-            if matches(loose, member):
+            if matches(loose, member, verification):
+                progress(f"[reuse] Selected verified loose media: {name}")
                 selected[name] = loose
                 continue
             if member["archive"] is None:
@@ -752,6 +849,7 @@ def run_archive_import(
                 save_receipt(state, receipt)
                 extract_dir = work / "extract" / extract_token
                 extract_dir.mkdir(parents=True, mode=0o700)
+                progress(f"[processing] Extracting archive: {archive_name}")
                 completed = subprocess.run(
                     [
                         executable,
@@ -781,13 +879,13 @@ def run_archive_import(
             if not matches(extract_dir / member["member"], member):
                 raise RuntimeError(f"Extracted member checksum failed: {name}; retained at {work}")
             selected[name] = extract_dir / member["member"]
-        if plan()[0] != manifest:
-            raise RuntimeError("Source/archive changed during preparation; stages retained")
+        verification.guard()
         for name in pending:
             job = receipt["jobs"].get(name)
             if not job or job["phase"] != "prepared":
                 input_path = selected[name]
-                source_hash = digest(input_path)
+                progress(f"[processing] Probing and importing: {name}")
+                source_hash = verification.read(input_path)
                 info = probe_file(input_path)
                 if info.probe_error or info.incompatible_reason:
                     raise RuntimeError(info.probe_error or info.incompatible_reason)
@@ -879,8 +977,7 @@ def run_archive_import(
                                 "ino": identity.st_ino,
                             }
                         )
-                if plan()[0] != manifest:
-                    raise RuntimeError("Source/archive changed during import; no publication")
+                verification.guard()
                 sync_tree(work)
                 if receipt["work"]["backup"] is not None:
                     sync_tree(backup_work)
@@ -893,14 +990,14 @@ def run_archive_import(
             owned_work(state, receipt["work"], "primary")
             if any(artifact["area"] == "backup" for artifact in job["artifacts"]):
                 owned_work(backup_state, receipt["work"], "backup")
-            if plan()[0] != manifest:
-                raise RuntimeError("Source/archive changed before publication")
+            verification.guard()
+            progress(f"[publication] Publishing verified artifacts: {name}")
             publish(job, work, backup_work, dest, backup, base_relative, plex)
             job["phase"] = "complete"
             save_receipt(state, receipt)
-            print(f"Verified import complete: {name}")
-        if plan()[0] != manifest:
-            raise RuntimeError("Source/archive changed; scan and cleanup deferred")
+            progress(f"Verified import complete: {name}")
+        verification.guard()
+        progress("[cleanup] Removing owned staging after verified batch completion")
         # Completion is durable before any staging cleanup. Retrying cleanup never imports again.
         for area, root in (("backup", backup_state), ("primary", state)):
             if receipt["work"][area] is None:
@@ -911,9 +1008,11 @@ def run_archive_import(
                 sync_dir(root)
         # --no-plex-scan leaves a durable pending intent for a later ordinary retry.
         if receipt["scan"] != "complete" and not no_plex_scan:
+            verification.guard()
+            progress(f"[scan] Scanning imported directory: {dest}")
             if not scan(dest):
                 raise RuntimeError("Plex scan failed; imports verified, scan remains pending")
             receipt["scan"] = "complete"
             save_receipt(state, receipt)
-        print(f"Source preserved at: {source}")
+        progress(f"Source preserved at: {source}")
         return 0
