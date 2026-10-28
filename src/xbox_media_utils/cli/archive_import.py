@@ -237,10 +237,10 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
     for path in sorted(source.rglob("*")):
         if path.suffix.lower() not in MEDIA_EXTENSIONS or is_sample_file(path):
             continue
-        relative = str(safe_relative(path.relative_to(source).as_posix()))
-        loose[relative] = digest(path)
-        if relative not in members:
-            members[relative] = {**loose[relative], "archive": None, "member": relative}
+        loose_name = str(safe_relative(path.relative_to(source).as_posix()))
+        loose[loose_name] = digest(path)
+        if loose_name not in members:
+            members[loose_name] = {**loose[loose_name], "archive": None, "member": loose_name}
     if not members:
         raise RuntimeError("No media files found")
     archive_paths = sorted(
@@ -517,7 +517,7 @@ def reserve_outputs(
     members: dict, dest: Path, backup: Path, base_relative: Path, receipt: dict
 ) -> None:
     """Reserve conservative generated names across the entire batch, before tools run."""
-    reserved = {}
+    reserved: dict[Path, str] = {}
     for name in members:
         relative = Path(name)
         if relative.name.endswith(".HDR10.mkv"):
@@ -669,8 +669,8 @@ def run_archive_import(
         if state.exists() or state.is_symlink():
             check_path(state, directory=True)
             for path in (state.parent, state):
-                value = path.lstat()
-                if value.st_uid != os.geteuid() or value.st_mode & 0o077:
+                state_stat = path.lstat()
+                if state_stat.st_uid != os.geteuid() or state_stat.st_mode & 0o077:
                     raise RuntimeError(f"Unsafe state directory: {path}")
         receipt = load_receipt(state, manifest, members)
         reserve_outputs(members, dest, backup, base_relative, receipt)
