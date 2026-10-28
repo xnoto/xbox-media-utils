@@ -1353,6 +1353,7 @@ def test_unverified_receipt_cannot_authorize_actions(
 ):
     _, plex, calls = rar_import
     if phase == "prepared":
+
         def interrupted(*args):
             raise OSError("stop before publication")
 
@@ -1388,7 +1389,6 @@ def test_unverified_receipt_cannot_authorize_actions(
     assert path.read_bytes() == before
     assert sorted(path.parent.glob("work-*")) == stages
     assert len(calls.imports) == import_count and len(calls.scans) == scan_count
-
 
 
 def test_completed_retries_freshly_read_source_and_artifact_bytes_once(
