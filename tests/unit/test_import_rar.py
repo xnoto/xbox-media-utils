@@ -997,3 +997,237 @@ def test_header_volume_outside_source_is_rejected(rar_import):
     assert not calls.extract and not calls.imports and not calls.scans
     assert not destination(source, plex).exists()
     assert outside.read_bytes() == b"archive"
+
+
+@pytest.mark.parametrize("mode", ["fresh", "complete", "scan-retry", "dry-run"])
+def test_one_inventory_per_invocation(rar_import, monkeypatch, mode):
+    _, _, calls = rar_import
+    argv = sys.argv[:]
+    if mode in {"complete", "scan-retry"}:
+        monkeypatch.setattr(sys, "argv", [*argv, "--no-plex-scan"])
+        run_main()
+        monkeypatch.setattr(sys, "argv", argv)
+    if mode == "dry-run":
+        monkeypatch.setattr(sys, "argv", [*argv, "--dry-run"])
+    inventory = archive.inventory
+    count = 0
+
+    def counted(*args, **kwargs):
+        nonlocal count
+        count += 1
+        return inventory(*args, **kwargs)
+
+    monkeypatch.setattr(archive, "inventory", counted)
+    run_main()
+    assert count == 1
+    assert len(calls.imports) == (0 if mode == "dry-run" else 1)
+
+
+def test_completed_retry_hashes_each_input_and_artifact_once(rar_import, monkeypatch):
+    source, plex, calls = rar_import
+    loose = source / "Movie.mkv"
+    loose.write_bytes(b"media")
+    calls.subtitle = calls.dovi = True
+    run_main()
+    digest = archive.digest
+    reads = []
+
+    def counted(path):
+        reads.append(path)
+        return digest(path)
+
+    monkeypatch.setattr(archive, "digest", counted)
+    monkeypatch.setattr(cli, "probe_file", lambda *a: pytest.fail("probe on completed retry"))
+    monkeypatch.setattr(cli, "import_file", lambda *a, **k: pytest.fail("reimport"))
+    expected = {
+        source / "a.rar",
+        loose,
+        destination(source, plex) / "Movie.mkv",
+        destination(source, plex) / "Movie.en.srt",
+        plex / "backup/movies" / source.name / "Movie.DV.mkv",
+    }
+    for _ in range(2):
+        reads.clear()
+        run_main()
+        assert set(reads) == expected
+        assert len(reads) == len(expected)
+    assert len(calls.imports) == 1 and not calls.extract
+
+
+def test_next_invocation_rehashes_even_when_identity_is_mocked_unchanged(rar_import, monkeypatch):
+    source, _, calls = rar_import
+    run_main()
+    path = source / "a.rar"
+    baseline = archive.file_identity(path.stat())
+    identity = archive.file_identity
+    path.write_bytes(b"changed")
+
+    def frozen(value):
+        if (value.st_dev, value.st_ino) == baseline[:2]:
+            return baseline
+        return identity(value)
+
+    monkeypatch.setattr(archive, "file_identity", frozen)
+    run_main(1)
+    assert len(calls.imports) == len(calls.scans) == 1
+
+
+@pytest.mark.parametrize("suffix", [".mkv", ".importing.mkv", ".en.srt"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unreceipted_metadata_preflight_performs_no_content_hashes(
+    rar_import, monkeypatch, suffix, dry_run
+):
+    source, plex, calls = rar_import
+    target = destination(source, plex)
+    target.mkdir()
+    conflict = target / ("Movie" + suffix)
+    conflict.write_bytes(b"preserve")
+    monkeypatch.setattr(archive, "digest", lambda *a: pytest.fail("hash before cheap conflict"))
+    if dry_run:
+        monkeypatch.setattr(sys, "argv", [*sys.argv, "--dry-run"])
+    run_main(1)
+    assert conflict.read_bytes() == b"preserve"
+    assert not calls.extract and not calls.imports and not calls.scans
+
+
+def test_progress_is_flushed_before_first_hash(rar_import, monkeypatch):
+    import builtins
+
+    real_print = builtins.print
+    digest = archive.digest
+    messages = []
+
+    def printed(*args, **kwargs):
+        if args and isinstance(args[0], str) and args[0].startswith("["):
+            assert kwargs.get("flush") is True
+            messages.append(args[0])
+        return real_print(*args, **kwargs)
+
+    def hashed(path):
+        assert any(message.startswith("[inventory]") for message in messages)
+        return digest(path)
+
+    monkeypatch.setattr(builtins, "print", printed)
+    monkeypatch.setattr(archive, "digest", hashed)
+    run_main()
+    for stage in ("inventory", "verification", "processing", "publication", "cleanup", "scan"):
+        assert any(message.startswith(f"[{stage}]") for message in messages)
+
+
+def test_digest_reports_throttled_byte_progress(tmp_path, monkeypatch):
+    path = tmp_path / "large.mkv"
+    path.write_bytes(b"x" * (4 * 1024 * 1024))
+    messages = []
+    ticks = iter([0, 0.2, 0.4, 1.1, 1.2, 1.3])
+    monkeypatch.setattr(archive.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(archive, "progress", messages.append)
+    value = archive.digest(path)
+    assert value["size"] == 4 * 1024 * 1024
+    assert len(messages) == 3  # Start, one timed update, verified completion.
+    assert str(path) in messages[1] and "3145728/4194304 bytes" in messages[1]
+    assert "MiB/s" in messages[1] and "Verified" in messages[-1]
+
+
+@pytest.mark.parametrize("checkpoint", ["extraction", "import", "prepared", "complete"])
+@pytest.mark.parametrize("mutation", ["inode", "mtime_ns", "ctime_ns", "names", "symlink", "fifo"])
+def test_identity_and_tree_changes_fail_at_existing_checkpoints(
+    rar_import, monkeypatch, checkpoint, mutation
+):
+    source, plex, calls = rar_import
+    changed = source / "a.rar"
+
+    def mutate():
+        if mutation == "inode":
+            replacement = source / "replacement"
+            replacement.write_bytes(changed.read_bytes())
+            replacement.replace(changed)
+        elif mutation == "mtime_ns":
+            value = changed.stat()
+            os.utime(changed, ns=(value.st_atime_ns, value.st_mtime_ns + 1_000_000))
+        elif mutation == "ctime_ns":
+            # Freeze every identity field except ctime, without changing payload bytes.
+            identity = archive.file_identity
+            original = identity(changed.stat())
+
+            def changed_ctime(value):
+                result = identity(value)
+                return (*result[:4], original[4] + 1) if result[:2] == original[:2] else result
+
+            monkeypatch.setattr(archive, "file_identity", changed_ctime)
+        elif mutation == "names":
+            (source / "new.mkv").write_bytes(b"new")
+        elif mutation == "symlink":
+            (source / "unsafe.sample.mkv").symlink_to(changed)
+        else:
+            os.mkfifo(source / "unsafe")
+
+    if checkpoint == "extraction":
+        calls.failure = lambda stage: mutate()
+    elif checkpoint == "import":
+        importer = cli.import_file
+
+        def after_import(*args, **kwargs):
+            result = importer(*args, **kwargs)
+            mutate()
+            return result
+
+        monkeypatch.setattr(cli, "import_file", after_import)
+    else:
+        save = archive.save_receipt
+
+        def after_save(state, receipt):
+            save(state, receipt)
+            if any(job["phase"] == checkpoint for job in receipt["jobs"].values()):
+                mutate()
+
+        monkeypatch.setattr(archive, "save_receipt", after_save)
+    run_main(1)
+    assert not calls.scans
+    if checkpoint != "complete":
+        assert not destination(source, plex).exists()
+    else:
+        assert (destination(source, plex) / "Movie.mkv").read_bytes() == b"media"
+
+
+def test_fresh_post_import_hash_catches_content_change_with_mocked_identity(
+    rar_import, monkeypatch
+):
+    source, plex, calls = rar_import
+    loose = source / "Movie.mkv"
+    loose.write_bytes(b"media")
+    importer = cli.import_file
+    identity = archive.file_identity
+    original = identity(loose.stat())
+
+    def frozen(value):
+        result = identity(value)
+        return original if result[:2] == original[:2] else result
+
+    def mutate(*args, **kwargs):
+        result = importer(*args, **kwargs)
+        loose.write_bytes(b"alter")
+        return result
+
+    monkeypatch.setattr(archive, "file_identity", frozen)
+    monkeypatch.setattr(cli, "import_file", mutate)
+    run_main(1)
+    assert len(calls.imports) == 1 and not calls.scans
+    assert not destination(source, plex).exists()
+
+
+def test_digest_cache_checks_identity_before_and_after_hash(tmp_path, monkeypatch):
+    path = tmp_path / "movie.mkv"
+    path.write_bytes(b"media")
+    verification = archive.Verification(tmp_path)
+    digest = archive.digest
+
+    def changed_after_hash(path):
+        value = digest(path)
+        old = path.stat()
+        os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns + 1_000_000))
+        return value
+
+    monkeypatch.setattr(archive, "digest", changed_after_hash)
+    with pytest.raises(RuntimeError, match="changed"):
+        verification.read(path)
+    assert not verification.digests

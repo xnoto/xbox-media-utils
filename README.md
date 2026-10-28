@@ -118,6 +118,22 @@ CRC32 detects accidental corruption, not authenticity. Metadata inspection does 
 compressed payload is readable. Encrypted archives, unsafe paths, and unsupported checksums remain
 unverified and fail safely rather than being accepted based on file existence.
 
+Each invocation performs one fresh full content inventory of every archive volume and non-sample
+loose-media file, including completed retries and dry runs. Digests are reused only in memory during
+that invocation; receipts never provide a persistent stat-only hash cache. Before hashing, safe
+metadata and known unreceipted destination conflicts are checked where possible. Existing receipts
+still require strict manifest and output verification before they authorize reuse.
+
+Progress is flushed immediately, including when piped: inventory, per-file hashing with bytes and
+throughput, reuse, processing, verification, publication, cleanup, and pending Plex scans. Completed
+retries hash each input and each published artifact once without probing, extracting, or importing.
+Within an invocation, source file identities (device, inode, size, nanosecond mtime and ctime), names,
+and unsafe tree entries are checked at processing/publication checkpoints instead of repeating the
+full inventory. Changes stop the run rather than refreshing the baseline. Fresh post-import input
+hashes and publication artifact verification remain in place. Identity checks are not cryptographic
+proof of unchanged content or protection against concurrent writers; keep sources quiescent during
+imports. This does not provide immutable snapshots or permit archives to change mid-import.
+
 Import receipts and a stable lock live under `<library>/.xbox-import-state/`, outside the source.
 DoVi recovery stages use a matching private directory beneath the backup root. Receipts
 bind archive identity to prepared and published output hashes. A completed import is skipped only
