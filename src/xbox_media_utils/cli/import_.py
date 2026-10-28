@@ -7,6 +7,8 @@ Unlike recode (which processes in-place), this COPIES from source to destination
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import re
 import shutil
 import sys
@@ -402,6 +404,19 @@ def main():
     try:
         if source_is_dir:
             archives = discover_rar_archives(args.source)
+            if not archives:
+                destination = Path(os.path.abspath(dest_base))
+                key = hashlib.sha256(os.fsencode(str(destination))).hexdigest()
+                state = destination.parent / ".xbox-import-state" / key
+                try:
+                    state.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise RuntimeError(
+                        "Existing archive import state but no RAR archives found; "
+                        "refusing loose-only fallback"
+                    )
         if archives:
             try:
                 status = run_archive_import(
