@@ -872,3 +872,52 @@ def test_batch_cleanup_waits_for_all_members_then_skips_completed_on_retry(
     assert [item.name for item in calls.imports] == ["A.mkv", "Z.mkv"]
     assert len(calls.extract) == 1
     assert not calls.extract[0].exists()
+
+
+@pytest.mark.parametrize("checkpoint", ["extraction", "import", "prepared"])
+def test_inflight_source_changes_prevent_publication(rar_import, monkeypatch, checkpoint):
+    source, plex, calls = rar_import
+    changed = source / "a.rar"
+    if checkpoint == "extraction":
+        def change_after_extraction(stage):
+            changed.write_bytes(b"changed")
+
+        calls.failure = change_after_extraction
+    elif checkpoint == "import":
+        changed = source / "Movie.mkv"
+        changed.write_bytes(b"media")
+        importer = cli.import_file
+
+        def change_during_import(*args, **kwargs):
+            result = importer(*args, **kwargs)
+            changed.write_bytes(b"alter")
+            return result
+
+        monkeypatch.setattr(cli, "import_file", change_during_import)
+    else:
+        save = archive.save_receipt
+
+        def change_after_prepared(state, receipt):
+            save(state, receipt)
+            if any(job["phase"] == "prepared" for job in receipt["jobs"].values()):
+                changed.write_bytes(b"changed")
+
+        monkeypatch.setattr(archive, "save_receipt", change_after_prepared)
+    run_main(1)
+    assert not destination(source, plex).exists()
+    assert not calls.scans
+    assert changed.read_bytes() == (b"alter" if checkpoint == "import" else b"changed")
+    state = receipt_path(plex)
+    assert state.exists()
+    assert list(state.parent.glob("work-*"))
+
+
+def test_header_volume_outside_source_is_rejected(rar_import):
+    source, plex, calls = rar_import
+    outside = source.parent / "outside.rar"
+    outside.write_bytes(b"archive")
+    calls.infos = [calls.make_info("Movie.mkv", b"media", outside)]
+    run_main(1)
+    assert not calls.extract and not calls.imports and not calls.scans
+    assert not destination(source, plex).exists()
+    assert outside.read_bytes() == b"archive"
