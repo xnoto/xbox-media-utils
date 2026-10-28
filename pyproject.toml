@@ -41,6 +41,7 @@ dependencies = [
     "babelfish>=0.6.0",
     "click>=8.0.0",
     "static-ffmpeg>=2.7",
+    "rarfile>=4.2,<4.3",
 ]
 
 [project.optional-dependencies]
