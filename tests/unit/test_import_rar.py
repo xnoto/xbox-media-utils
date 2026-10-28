@@ -691,3 +691,184 @@ def test_state_symlink_is_never_followed(rar_import):
     run_main(1)
     assert not calls.extract and not calls.imports
     assert sorted(path.name for path in source.iterdir()) == ["a.rar"]
+
+
+@pytest.mark.parametrize("failure", ["interrupt", "oserror"])
+def test_dovi_backup_stage_checkpoint_survives_copy_failure(
+    rar_import, monkeypatch, failure
+):
+    source, plex, calls = rar_import
+    calls.dovi = True
+    copy = archive.shutil.copy2
+
+    def fail_copy(*args, **kwargs):
+        # create_work has saved its ownership checkpoint, but no backup copy or
+        # PREPARED receipt exists. A working job must still have NO artifacts.
+        path = receipt_path(plex)
+        receipt = json.loads(path.read_text())
+        job = receipt["jobs"]["Movie.mkv"]
+        assert receipt["work"]["backup"] is not None
+        assert job["phase"] == "working"
+        assert job["artifacts"] == []
+        archive.load_receipt(
+            path.parent,
+            receipt["manifest"],
+            receipt["manifest"]["inventory"]["members"],
+        )
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        raise OSError("backup copy interrupted after ownership checkpoint")
+
+    monkeypatch.setattr(archive.shutil, "copy2", fail_copy)
+    run_main(130 if failure == "interrupt" else 1)
+    assert not destination(source, plex).exists()
+    assert not calls.scans
+    receipt = json.loads(receipt_path(plex).read_text())
+    assert receipt["jobs"]["Movie.mkv"]["artifacts"] == []
+    monkeypatch.setattr(archive.shutil, "copy2", copy)
+    run_main()
+    assert len(calls.extract) == 1
+    assert len(calls.imports) == 2  # WORKING output was never prepared for reuse.
+    backup = plex / "backup/movies" / source.name / "Movie.DV.mkv"
+    assert backup.read_bytes() == b"media"
+    assert (destination(source, plex) / "Movie.mkv").read_bytes() == b"HDR10 output"
+    run_main()
+    assert len(calls.imports) == 2
+    assert len(calls.scans) == 1
+
+
+def test_archive_and_loose_samples_use_canonical_filter(rar_import):
+    source, plex, calls = rar_import
+    calls.contents["a.rar"] = {
+        "Movie.mkv": b"media",
+        "Movie.Sample.mkv": b"archive sample",
+        "Sample/clip.mkv": b"archive directory sample",
+    }
+    (source / "Movie.mkv").write_bytes(b"media")
+    (source / "loose.sample.mkv").write_bytes(b"loose sample")
+    sample_dir = source / "Sample"
+    sample_dir.mkdir()
+    sample = sample_dir / "clip.mkv"
+    sample.write_bytes(b"source sample")
+    run_main()
+    assert calls.imports == [source / "Movie.mkv"]
+    assert not calls.extract
+    assert sorted(path.name for path in destination(source, plex).iterdir()) == [
+        "Movie.mkv"
+    ]
+    receipt = json.loads(receipt_path(plex).read_text())
+    assert set(receipt["manifest"]["inventory"]["members"]) == {"Movie.mkv"}
+    assert set(receipt["manifest"]["inventory"]["loose"]) == {"Movie.mkv"}
+    assert sample.read_bytes() == b"source sample"
+    assert (source / "loose.sample.mkv").read_bytes() == b"loose sample"
+
+
+def test_ignored_sample_still_gets_archive_metadata_safety_checks(rar_import):
+    source, _, calls = rar_import
+    main = calls.make_info("Movie.mkv", b"media", source / "a.rar")
+    sample = calls.make_info("Movie.Sample.mkv", b"sample", source / "a.rar")
+    sample.file_redir = (4, 0, "../outside")
+    calls.infos = [main, sample]
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_ignored_loose_sample_symlink_is_not_followed(rar_import):
+    source, _, calls = rar_import
+    (source / "Movie.mkv").write_bytes(b"media")
+    (source / "loose.sample.mkv").symlink_to(source / "a.rar")
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_ownership_eperm_fails_before_publication_and_can_retry(
+    rar_import, monkeypatch
+):
+    source, plex, calls = rar_import
+    (source / "Movie.mkv").write_bytes(b"media")
+    ownership = archive.set_ownership
+    monkeypatch.setattr(archive, "set_ownership", lambda *args: (False, "EPERM"))
+    link = archive.os.link
+    monkeypatch.setattr(
+        archive.os,
+        "link",
+        lambda *args, **kwargs: pytest.fail("published despite ownership failure"),
+    )
+    run_main(1)
+    assert not calls.extract
+    assert not destination(source, plex).exists()
+    assert not calls.scans
+    receipt = json.loads(receipt_path(plex).read_text())
+    assert receipt["jobs"]["Movie.mkv"]["phase"] == "working"
+    assert receipt["jobs"]["Movie.mkv"]["artifacts"] == []
+    monkeypatch.setattr(archive, "set_ownership", ownership)
+    monkeypatch.setattr(archive.os, "link", link)
+    run_main()
+    assert len(calls.imports) == 2
+    assert (source / "Movie.mkv").read_bytes() == b"media"
+
+
+def test_extractor_nonzero_status_is_fatal_without_fallback(rar_import, monkeypatch):
+    _, _, calls = rar_import
+    run = archive.subprocess.run
+
+    def unsupported_switch(argv, **kwargs):
+        result = run(argv, **kwargs)
+        if "x" in argv:
+            result.returncode = 7
+            result.stderr = "Unsupported switch -ol-"
+        return result
+
+    monkeypatch.setattr(archive.subprocess, "run", unsupported_switch)
+    run_main(1)
+    assert len(calls.extract) == 1
+    assert not calls.imports and not calls.scans
+
+
+def test_archive_source_destination_overlap_fails_before_extraction(
+    rar_import, monkeypatch
+):
+    source, _, calls = rar_import
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["xbox-import", str(source), "--plex", str(source), "--library", "movies"],
+    )
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_different_source_cannot_reuse_destination_receipt(rar_import):
+    source, _, calls = rar_import
+    run_main()
+    # Simulate a new source at the same canonical path; source content, not the
+    # common directory basename or existing output length, determines identity.
+    (source / "a.rar").write_bytes(b"changed")
+    run_main(1)
+    assert len(calls.imports) == 1
+
+
+def test_batch_cleanup_waits_for_all_members_then_skips_completed_on_retry(
+    rar_import, monkeypatch
+):
+    _, plex, calls = rar_import
+    calls.contents["a.rar"] = {"A.mkv": b"first", "Z.mkv": b"second"}
+    importer = cli.import_file
+
+    def fail_second(info, *args, **kwargs):
+        if info.path.name == "Z.mkv":
+            return {"status": "failed", "error": "second member failed"}
+        return importer(info, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "import_file", fail_second)
+    run_main(1)
+    path = receipt_path(plex)
+    receipt = json.loads(path.read_text())
+    assert receipt["jobs"]["A.mkv"]["phase"] == "complete"
+    assert (calls.extract[0] / "A.mkv").read_bytes() == b"first"
+    assert not calls.scans
+    monkeypatch.setattr(cli, "import_file", importer)
+    run_main()
+    assert [item.name for item in calls.imports] == ["A.mkv", "Z.mkv"]
+    assert len(calls.extract) == 1
+    assert not calls.extract[0].exists()
