@@ -313,7 +313,13 @@ def import_file(
 
 def discover_rar_archives(source: Path) -> list[Path]:
     """Find archive sets, leaving continuation volumes for unrar to consume."""
-    archives = sorted(path for path in source.rglob("*") if path.suffix.lower() == ".rar")
+    paths = list(source.rglob("*"))
+    archives = sorted(path for path in paths if path.suffix.lower() == ".rar")
+    first_names = {(path.parent, path.stem.casefold()) for path in archives}
+    for path in paths:
+        if re.fullmatch(r"\.[r-z]\d{2}", path.suffix, re.IGNORECASE):
+            if (path.parent, path.stem.casefold()) not in first_names:
+                raise RuntimeError(f"Missing first RAR volume for: {path}")
     first_volumes = set()
     for archive in archives:
         match = re.fullmatch(r"(.+)\.part(\d+)\.rar", archive.name, re.IGNORECASE)
@@ -411,9 +417,6 @@ def main():
                 print(f"Error importing archives (staging retained): {error}", file=sys.stderr)
                 sys.exit(1)
             sys.exit(status)
-        if args.dry_run:
-            for archive in archives:
-                print(f"Would extract RAR before importing: {archive}")
         files = collect_media_files(args.source, MEDIA_EXTENSIONS)
         relative_paths = {
             path: path.relative_to(args.source) if source_is_dir else Path(path.name)
@@ -425,9 +428,6 @@ def main():
         sys.exit(1)
 
     if not files:
-        if args.dry_run and archives:
-            print("Archived media will be discovered and checked during the real import.")
-            sys.exit(0)
         print(f"No media files found in: {args.source}")
         sys.exit(1)
 

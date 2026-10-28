@@ -53,7 +53,7 @@ def rar_import(tmp_path, monkeypatch):
         for item in infos:
             info_callback(item)
         return SimpleNamespace(
-            __enter__=None, infos=infos,
+            infos=infos,
         )
 
     class Metadata:
@@ -170,7 +170,10 @@ def test_missing_truncated_and_same_size_corrupt_loose_use_staging(rar_import, d
     assert len(calls.extract) == len(calls.imports) == 1
     assert calls.imports[0] != loose
     assert (destination(source, plex) / "Movie.mkv").read_bytes() == b"media"
-    assert loose.read_bytes() == data if data is not None else not loose.exists()
+    if data is None:
+        assert not loose.exists()
+    else:
+        assert loose.read_bytes() == data
     run_main()
     assert len(calls.extract) == len(calls.imports) == 1
 
@@ -536,3 +539,155 @@ def test_standalone_media_does_not_inspect_neighbor_archives(rar_import, monkeyp
     monkeypatch.setattr(cli, "discover_rar_archives", lambda *a: pytest.fail("neighbor archive inspection"))
     run_main()
     assert calls.imports == [loose] and not calls.extract
+
+
+@pytest.mark.parametrize("collision", ["extension", "archive", "ancestor", "intermediate"])
+def test_batch_collision_preflight_blocks_all_tools(rar_import, collision):
+    source, _, calls = rar_import
+    if collision == "extension":
+        (source / "Movie.mp4").write_bytes(b"loose")
+    elif collision == "archive":
+        (source / "b.rar").write_bytes(b"other archive")
+        calls.contents["b.rar"] = {"Movie.mkv": b"other"}
+    elif collision == "ancestor":
+        calls.contents["a.rar"]["Movie.mkv/episode.mkv"] = b"other"
+    else:
+        calls.contents["a.rar"]["Movie.importing.mkv"] = b"other"
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_all_sets_extracted_before_any_import(rar_import, monkeypatch):
+    source, _, calls = rar_import
+    (source / "b.rar").write_bytes(b"other archive")
+    calls.contents["b.rar"] = {"Other.mkv": b"other"}
+    importer = cli.import_file
+
+    def after_extraction(*args, **kwargs):
+        assert len(calls.extract) == 2
+        return importer(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "import_file", after_extraction)
+    run_main()
+    assert len(calls.imports) == 2
+
+
+def test_later_extraction_failure_prevents_all_imports(rar_import):
+    source, _, calls = rar_import
+    (source / "b.rar").write_bytes(b"other archive")
+    calls.contents["b.rar"] = {"Other.mkv": b"other"}
+
+    def fail_second(stage):
+        if len(calls.extract) == 2:
+            raise OSError("CRC failure")
+
+    calls.failure = fail_second
+    run_main(1)
+    assert not calls.imports and not calls.scans
+    assert calls.extract[0].exists()
+
+
+@pytest.mark.parametrize("failure", ["probe", "incompatible", "import", "ownership", "validation"])
+def test_processing_failures_retain_stage_without_publication(rar_import, monkeypatch, failure):
+    source, plex, calls = rar_import
+    if failure in {"probe", "incompatible"}:
+        monkeypatch.setattr(
+            cli, "probe_file", lambda path: MediaInfo(
+                path=path, probe_error="probe failed" if failure == "probe" else None,
+                incompatible_reason="incompatible" if failure == "incompatible" else None,
+            ),
+        )
+    elif failure == "import":
+        monkeypatch.setattr(cli, "import_file", lambda *a, **k: {"status": "failed", "error": "failed"})
+    elif failure == "ownership":
+        monkeypatch.setattr(archive, "set_ownership", lambda *a: (False, "permission denied"))
+    else:
+        calls.dovi = True
+        monkeypatch.setattr(archive, "validate_output", lambda *a: (False, "invalid output"))
+    run_main(1)
+    assert not destination(source, plex).exists() and not calls.scans
+    assert calls.extract[0].exists()
+    assert (source / "a.rar").read_bytes() == b"archive"
+
+
+def test_unlink_cleanup_failure_retries_without_import(rar_import, monkeypatch):
+    _, _, calls = rar_import
+    unlink = archive.os.unlink
+
+    def denied(path, *args, **kwargs):
+        if Path(path).name == "Movie.mkv":
+            raise OSError("unlink denied")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(archive.os, "unlink", denied)
+    run_main(1)
+    monkeypatch.setattr(archive.os, "unlink", unlink)
+    run_main()
+    assert len(calls.imports) == len(calls.extract) == 1
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_invalid_archive_source_never_extracted(rar_import, kind):
+    source, _, calls = rar_import
+    path = source / "a.rar"
+    path.unlink()
+    if kind == "symlink":
+        original = source / "original.bin"
+        original.write_bytes(b"archive")
+        path.symlink_to(original)
+    else:
+        path.mkdir()
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+@pytest.mark.parametrize("name", ["a.part1.rar", "a.PART01.RAR"])
+def test_multipart_first_volume_names_and_continuations(rar_import, name):
+    source, _, calls = rar_import
+    (source / "a.rar").unlink()
+    first = source / name
+    second = source / "a.part02.rar"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    calls.contents = {name: {"Movie.mkv": b"media"}}
+    calls.volumes = [str(first), str(second)]
+    run_main()
+    assert len(calls.extract) == 1
+
+
+def test_old_style_orphan_volume_fails_without_receipt(rar_import):
+    source, _, calls = rar_import
+    (source / "a.rar").unlink()
+    (source / "a.r00").write_bytes(b"continuation")
+    (source / "Movie.mkv").write_bytes(b"media")
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_unknown_orphan_stage_is_not_scanned_or_deleted(rar_import):
+    source, plex, _ = rar_import
+    unknown = plex / "movies/.xbox-import-unowned"
+    unknown.mkdir()
+    (unknown / "Movie.mkv").write_bytes(b"do not touch")
+    run_main()
+    assert (unknown / "Movie.mkv").read_bytes() == b"do not touch"
+    assert (source / "a.rar").exists()
+
+
+def test_missing_crc_with_blake2_metadata_is_not_substituted(rar_import):
+    source, _, calls = rar_import
+    item = calls.make_info("Movie.mkv", b"media", source / "a.rar")
+    item.CRC = None
+    item.blake2sp_hash = b"x" * 32
+    calls.infos = [item]
+    run_main(1)
+    assert not calls.extract and not calls.imports
+
+
+def test_state_symlink_is_never_followed(rar_import):
+    source, plex, calls = rar_import
+    state = plex / "movies/.xbox-import-state"
+    state.symlink_to(source, target_is_directory=True)
+    run_main(1)
+    assert not calls.extract and not calls.imports
+    assert sorted(path.name for path in source.iterdir()) == ["a.rar"]
