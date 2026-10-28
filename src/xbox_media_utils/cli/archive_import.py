@@ -299,7 +299,7 @@ def inventory(
             if str(parent) != "."
         ):
             raise RuntimeError(f"RAR file/directory collision: {name}")
-    loose = {}
+    loose: dict[str, dict] = {}
     for path in sorted(source.rglob("*")):
         if path.suffix.lower() not in MEDIA_EXTENSIONS or is_sample_file(path):
             continue

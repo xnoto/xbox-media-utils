@@ -1268,3 +1268,121 @@ def test_cached_digest_rejects_changed_identity_without_rehash(tmp_path, monkeyp
     monkeypatch.setattr(archive, "digest", lambda *a: pytest.fail("silently rebased digest"))
     with pytest.raises(RuntimeError, match="changed"):
         verification.read(path)
+
+
+@pytest.fixture
+def source_verification_io(rar_import, monkeypatch):
+    """Count real verifier descriptors/bytes, not calls to digest or inventory."""
+    source, _, _ = rar_import
+    opened = archive.os.open
+    fdopen = archive.os.fdopen
+    descriptors = {}
+    counts = SimpleNamespace(opens=[], bytes={})
+
+    def tracked_open(path, flags, *args, **kwargs):
+        fd = opened(path, flags, *args, **kwargs)
+        candidate = Path(os.fsdecode(path))
+        if source in candidate.parents and flags & os.O_ACCMODE == os.O_RDONLY:
+            descriptors[fd] = candidate
+            counts.opens.append(candidate)
+        return fd
+
+    class Reader:
+        def __init__(self, stream, path):
+            self.stream = stream
+            self.path = path
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size):
+            block = self.stream.read(size)
+            counts.bytes[self.path] = counts.bytes.get(self.path, 0) + len(block)
+            return block
+
+    def tracked_fdopen(fd, *args, **kwargs):
+        stream = fdopen(fd, *args, **kwargs)
+        path = descriptors.pop(fd, None)
+        return Reader(stream, path) if path is not None else stream
+
+    monkeypatch.setattr(archive.os, "open", tracked_open)
+    monkeypatch.setattr(archive.os, "fdopen", tracked_fdopen)
+    return counts
+
+
+@pytest.mark.parametrize("mode", ["fresh", "dry-run", "complete", "scan-retry"])
+def test_actual_source_verification_opens_and_bytes(
+    rar_import, source_verification_io, monkeypatch, mode
+):
+    source, _, _ = rar_import
+    loose = source / "Movie.mkv"
+    loose.write_bytes(b"media")
+    counts = source_verification_io
+    argv = sys.argv[:]
+    if mode in {"complete", "scan-retry"}:
+        if mode == "scan-retry":
+            monkeypatch.setattr(sys, "argv", [*argv, "--no-plex-scan"])
+        run_main()
+        monkeypatch.setattr(sys, "argv", argv)
+    if mode == "dry-run":
+        monkeypatch.setattr(sys, "argv", [*argv, "--dry-run"])
+    for _ in range(2 if mode == "complete" else 1):
+        counts.opens.clear()
+        counts.bytes.clear()
+        run_main()
+        loose_reads = 2 if mode == "fresh" else 1
+        assert counts.opens.count(source / "a.rar") == 1
+        assert counts.opens.count(loose) == loose_reads
+        assert len(counts.opens) == 1 + loose_reads
+        assert counts.bytes == {source / "a.rar": 7, loose: 5 * loose_reads}
+
+
+@pytest.mark.parametrize("phase", ["prepared", "complete"])
+@pytest.mark.parametrize("corruption", ["schema", "manifest", "artifact"])
+def test_unverified_receipt_cannot_authorize_actions(
+    rar_import, monkeypatch, capsys, phase, corruption
+):
+    _, plex, calls = rar_import
+    if phase == "prepared":
+        def interrupted(*args):
+            raise OSError("stop before publication")
+
+        monkeypatch.setattr(archive, "publish", interrupted)
+        run_main(1)
+    else:
+        run_main()
+    capsys.readouterr()
+    path = receipt_path(plex)
+    receipt = json.loads(path.read_text())
+    assert receipt["jobs"]["Movie.mkv"]["phase"] == phase
+    if corruption == "schema":
+        receipt["version"] = 999
+    elif corruption == "manifest":
+        receipt["manifest"]["hardware"] = not receipt["manifest"]["hardware"]
+    else:
+        receipt["jobs"]["Movie.mkv"]["artifacts"][0]["sha256"] = "not-a-digest"
+    path.write_text(json.dumps(receipt))
+    before = path.read_bytes()
+    stages = sorted(path.parent.glob("work-*"))
+    import_count, scan_count = len(calls.imports), len(calls.scans)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("unverified receipt authorized an action")
+
+    monkeypatch.setattr(archive, "publish", forbidden)
+    monkeypatch.setattr(archive.shutil, "rmtree", forbidden)
+    monkeypatch.setattr(cli, "probe_file", forbidden)
+    monkeypatch.setattr(cli, "import_file", forbidden)
+    monkeypatch.setattr(cli, "trigger_plex_scan", forbidden)
+    run_main(1)
+    assert "Already verified" not in capsys.readouterr().out
+    assert path.read_bytes() == before
+    assert sorted(path.parent.glob("work-*")) == stages
+    assert len(calls.imports) == import_count and len(calls.scans) == scan_count
