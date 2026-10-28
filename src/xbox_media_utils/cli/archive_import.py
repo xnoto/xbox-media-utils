@@ -28,6 +28,7 @@ import rarfile
 
 from xbox_media_utils.constants import MEDIA_EXTENSIONS
 from xbox_media_utils.core import PLEX_GROUP, PLEX_USER
+from xbox_media_utils.ffmpeg import validate_output
 from xbox_media_utils.files import set_ownership
 
 
@@ -111,6 +112,12 @@ def vendor_unrar() -> str:
 
 def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
     """Read strict metadata, complete volume hashes, and all loose-media hashes."""
+    # Reject links/special files before rarfile can follow a continuation volume.
+    for current, dirs, files in os.walk(source, followlinks=False):
+        for name in dirs:
+            check_path(Path(current) / name, directory=True)
+        for name in files:
+            check_path(Path(current) / name)
     sets = []
     members = {}
     logical_files = set()
@@ -118,17 +125,40 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
     for archive in archives:
         check_path(archive)
         first_hash = digest(archive)
+        split_name = None
+
+        def inspect_header(header):
+            nonlocal split_name
+            # rarfile checks headers, but a seek past a truncated final payload can
+            # otherwise look like EOF. Check extents without decoding any payload.
+            volume = Path(header.volume_file)
+            check_path(volume)
+            volume.relative_to(source)
+            if header.data_offset + header.add_size > volume.stat().st_size:
+                raise RuntimeError(f"Truncated RAR volume: {volume}")
+            if header.type != rarfile.RAR_BLOCK_FILE:
+                return
+            if header.flags & rarfile.RAR_FILE_VERSION:
+                raise RuntimeError("Versioned RAR members unsupported")
+            if header.flags & rarfile.RAR_FILE_SPLIT_BEFORE:
+                if split_name != header.filename:
+                    raise RuntimeError("Broken multipart member chain")
+            elif split_name is not None:
+                raise RuntimeError("Incomplete multipart member")
+            split_name = header.filename if header.flags & rarfile.RAR_FILE_SPLIT_AFTER else None
         # 4.2 can decompress compressed archive comments during construction.
         # Refuse that route, too: no rarfile backend selection may ever run.
         with warnings.catch_warnings(), patch.object(
             rarfile, "tool_setup", side_effect=RuntimeError("Compressed RAR comments unsupported")
         ):
             warnings.simplefilter("error", rarfile.UnsupportedWarning)
-            with rarfile.RarFile(str(archive), errors="strict") as metadata:
+            with rarfile.RarFile(str(archive), errors="strict", info_callback=inspect_header) as metadata:
                 if metadata.needs_password() or metadata.strerror():
                     raise RuntimeError(f"Encrypted or incomplete RAR: {archive}")
                 infos = metadata.infolist()
                 volumes = [Path(name) for name in metadata.volumelist()]
+        if split_name is not None:
+            raise RuntimeError("Incomplete multipart member")
         if not volumes or volumes[0] != archive:
             raise RuntimeError(f"Invalid RAR volume inventory: {archive}")
         volume_hashes = {}
@@ -180,7 +210,7 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
     for path in sorted(source.rglob("*")):
         if path.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
-        relative = str(path.relative_to(source))
+        relative = str(safe_relative(path.relative_to(source).as_posix()))
         loose[relative] = digest(path)
         if relative not in members:
             members[relative] = {**loose[relative], "archive": None, "member": relative}
@@ -205,6 +235,17 @@ def private_file(path: Path) -> None:
     value = path.lstat()
     if value.st_uid != os.geteuid() or value.st_mode & 0o077 or value.st_nlink != 1:
         raise RuntimeError(f"Unsafe import state file: {path}")
+
+
+def output_ownership(path: Path) -> None:
+    success, error = set_ownership(path, PLEX_USER, PLEX_GROUP)
+    if not success:
+        raise RuntimeError(f"Cannot set Plex ownership on {path}: {error}")
+
+
+def sync_tree(path: Path) -> None:
+    for current, _, _ in os.walk(path, topdown=False):
+        sync_dir(Path(current))
 
 
 def sync_dir(path: Path) -> None:
@@ -267,7 +308,7 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
         raise RuntimeError("Invalid import receipt schema")
     if receipt["version"] != 1 or receipt["manifest"] != manifest:
         raise RuntimeError("Source/archive/configuration changed or unsupported receipt; refusing existing import")
-    if receipt["scan"] not in {"pending", "complete"}:
+    if not isinstance(receipt["scan"], str) or receipt["scan"] not in {"pending", "complete"}:
         raise RuntimeError("Invalid scan receipt")
     work = receipt["work"]
     if work is not None:
@@ -289,7 +330,7 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
     for name, job in receipt["jobs"].items():
         if name not in members or not isinstance(job, dict) or set(job) != {"phase", "token", "artifacts"}:
             raise RuntimeError("Invalid member receipt")
-        if job["phase"] not in {"working", "prepared", "complete"} or not token(job["token"]):
+        if not isinstance(job["phase"], str) or job["phase"] not in {"working", "prepared", "complete"} or not token(job["token"]):
             raise RuntimeError("Invalid member phase")
         if not isinstance(job["artifacts"], list) or (job["phase"] != "working" and not job["artifacts"]):
             raise RuntimeError("Invalid artifact receipt")
@@ -318,8 +359,10 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
                 raise RuntimeError("Invalid artifact digest")
             if any(type(artifact[key]) is not int or artifact[key] < 0 for key in ("size", "dev", "ino")):
                 raise RuntimeError("Invalid artifact identity")
-    if receipt["jobs"] and work is None:
+    if (receipt["jobs"] or receipt["extract"]) and work is None:
         raise RuntimeError("Missing operation ownership")
+    if any(job["phase"] == "prepared" for job in receipt["jobs"].values()) and work["primary"] is None:
+        raise RuntimeError("Missing prepared stage ownership")
     return receipt
 
 
@@ -384,13 +427,26 @@ def reserve_outputs(members: dict, dest: Path, backup: Path, base_relative: Path
                 if owner != name and (target == previous or target in previous.parents or previous in target.parents):
                     raise RuntimeError(f"Import destination collision: {target}")
             reserved[target] = name
-            if name not in receipt["jobs"] and (target.exists() or target.is_symlink()):
-                raise RuntimeError(f"Unrecognized destination already exists: {target}")
+            job = receipt["jobs"].get(name)
+            recognized = job is not None and job["phase"] in {"prepared", "complete"}
+            authorized = {artifact_target(item, dest, backup) for item in job["artifacts"]} if recognized else set()
+            if (target.exists() or target.is_symlink()) and target not in authorized:
+                raise RuntimeError(
+                    f"Unrecognized destination already exists (including legacy partials): {target}; "
+                    "preserved unchanged. Inspect and relocate conflicting artifacts explicitly before retrying."
+                )
         parent = dest / relative.parent
-        if parent.exists() and name not in receipt["jobs"]:
+        if parent.exists():
             for path in parent.iterdir():
-                if path.name.startswith(relative.stem + ".en.") and path.suffix in {".srt", ".ass", ".sup"}:
-                    raise RuntimeError(f"Unrecognized subtitle destination: {path}")
+                if (
+                    path.name.startswith(relative.stem + ".en.")
+                    and path.suffix in {".srt", ".ass", ".sup"}
+                    and path not in authorized
+                ):
+                    raise RuntimeError(
+                        f"Unrecognized subtitle destination (legacy partial preserved): {path}; "
+                        "inspect and relocate conflicting artifacts explicitly before retrying."
+                    )
 
 
 def staged_artifact(artifact: dict, job: dict, work: Path, backup_work: Path, base_relative: Path) -> Path:
@@ -422,7 +478,7 @@ def publish(job: dict, work: Path, backup_work: Path, dest: Path, backup: Path, 
         current = target.parent
         boundary = plex if artifact["area"] == "primary" else backup
         while current != boundary and current != current.parent:
-            set_ownership(current, PLEX_USER, PLEX_GROUP)
+            output_ownership(current)
             current = current.parent
         try:
             os.link(staged, target, follow_symlinks=False)
@@ -438,10 +494,12 @@ def run_archive_import(
     no_plex_scan: bool = False, use_hardware: bool = True,
 ) -> int:
     """Return CLI status; caller reports errors without discarding recovery state."""
-    source = source.absolute()
-    dest = dest.absolute()
-    plex = plex.absolute()
-    backup = backup.absolute()
+    for path in (source, dest, plex, backup):
+        check_path(path.absolute(), directory=True, missing=True)
+    source = Path(os.path.abspath(source))
+    dest = Path(os.path.abspath(dest))
+    plex = Path(os.path.abspath(plex))
+    backup = Path(os.path.abspath(backup))
     check_path(source, directory=True)
     check_path(dest, directory=True, missing=True)
     check_path(backup, directory=True, missing=True)
@@ -449,8 +507,10 @@ def run_archive_import(
         raise RuntimeError("RAR import source and destination must not overlap")
     if source == backup or source in backup.parents or backup in source.parents:
         raise RuntimeError("RAR source and DoVi backup must not overlap")
-    base_relative = dest.relative_to(plex)
-    archives = [path.absolute() for path in archives]
+    if backup == dest or backup in dest.parents or dest in backup.parents:
+        raise RuntimeError("DoVi backup and import destination must not overlap")
+    base_relative = safe_relative(dest.relative_to(plex).as_posix())
+    archives = [Path(os.path.abspath(path)) for path in archives]
     key = hashlib.sha256(os.fsencode(str(dest))).hexdigest()
     state = dest.parent / ".xbox-import-state" / key
     backup_state = backup / ".xbox-import-state" / key
@@ -505,6 +565,15 @@ def run_archive_import(
         work = work_root(state, receipt["work"])
         backup_work = work_root(backup_state, receipt["work"])
         if pending:
+            if receipt["work"]["primary"] is None and work.exists():
+                if receipt["jobs"] or receipt["extract"]:
+                    raise RuntimeError(f"Unowned stage retained: {work}")
+                print(f"Unowned interrupted stage preserved: {work}")
+                receipt["work"]["token"] = uuid.uuid4().hex
+                save_receipt(state, receipt)
+                backup_work = work_root(backup_state, receipt["work"])
+            if any(receipt["jobs"].get(name, {}).get("phase") == "prepared" for name in pending):
+                owned_work(state, receipt["work"], "primary")
             work = create_work(state, receipt, "primary", state)
             print(f"Archive staging: {work}")
         selected = {}
@@ -570,8 +639,22 @@ def run_archive_import(
                     raise RuntimeError("Import input changed; outputs retained, not published")
                 if result["action"] == "copy" and digest(Path(result["destination"])) != source_hash:
                     raise RuntimeError("Copied output does not match source")
-                if not Path(result["destination"]).is_file():
+                destination = Path(result["destination"])
+                if not destination.is_file():
                     raise RuntimeError("Importer did not produce its primary artifact")
+                destination.relative_to(primary_root / base_relative)
+                if result["action"] != "copy":
+                    valid, reason = validate_output(info, destination)
+                    if not valid:
+                        raise RuntimeError(f"Output validation failed: {reason}")
+                allowed_primary = {destination}
+                for subtitle in result.get("subtitles_extracted", []):
+                    if not subtitle.get("success") or not subtitle.get("output"):
+                        raise RuntimeError("Subtitle extraction incomplete; outputs retained")
+                    allowed_primary.add(Path(subtitle["output"]))
+                expected_backup = job_root / "backup" / base_relative / Path(name).with_suffix(".DV.mkv")
+                if info.has_dovi_profile_8 and not expected_backup.is_file():
+                    raise RuntimeError("DoVi original backup missing; refusing publication")
                 for area, root in (("primary", primary_root / base_relative), ("backup", job_root / "backup")):
                     if not root.exists():
                         continue
@@ -579,6 +662,10 @@ def run_archive_import(
                         if path.is_dir():
                             continue
                         relative = path.relative_to(root)
+                        if area == "primary" and path not in allowed_primary:
+                            raise RuntimeError(f"Unexpected/incomplete primary artifact retained: {path}")
+                        if area == "backup" and (path != expected_backup or digest(path) != source_hash):
+                            raise RuntimeError("DoVi backup is not the original source at its logical path")
                         if area == "backup":
                             check_path(backup, directory=True, missing=True)
                             backup.mkdir(parents=True, exist_ok=True)
@@ -589,7 +676,7 @@ def run_archive_import(
                             if digest(copied) != digest(path):
                                 raise RuntimeError("DoVi backup staging copy mismatch")
                             path = copied
-                        set_ownership(path, PLEX_USER, PLEX_GROUP)
+                        output_ownership(path)
                         with open(path, "rb") as stream:
                             os.fsync(stream.fileno())
                         value = digest(path)
@@ -600,6 +687,9 @@ def run_archive_import(
                         })
                 if plan()[0] != manifest:
                     raise RuntimeError("Source/archive changed during import; no publication")
+                sync_tree(work)
+                if receipt["work"]["backup"] is not None:
+                    sync_tree(backup_work)
                 job["phase"] = "prepared"
                 save_receipt(state, receipt)  # Must succeed before the first link.
                 load_receipt(state, manifest, members)  # Validate generated paths as untrusted input.
