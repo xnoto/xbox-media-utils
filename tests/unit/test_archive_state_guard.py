@@ -31,8 +31,7 @@ def test_missing_archives_refuse_existing_state_before_loose_import(
     receipt = state / "receipt.json"
     receipt.write_text(json.dumps({"jobs": {"movie.mkv": {"phase": phase}}, "scan": "pending"}))
     before = {
-        path: path.read_bytes()
-        for path in [source / "movie.mkv", receipt, *destination.iterdir()]
+        path: path.read_bytes() for path in [source / "movie.mkv", receipt, *destination.iterdir()]
     }
     argv = ["xbox-import", str(source), "--plex", str(plex), "--library", "movies"]
     if dry_run:

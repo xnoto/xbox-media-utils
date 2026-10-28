@@ -23,33 +23,53 @@ def rar_import(tmp_path, monkeypatch):
     (plex / "movies").mkdir(parents=True)
     (source / "a.rar").write_bytes(b"archive")
     calls = SimpleNamespace(
-        extract=[], imports=[], scans=[], contents={"a.rar": {"Movie.mkv": b"media"}},
+        extract=[],
+        imports=[],
+        scans=[],
+        contents={"a.rar": {"Movie.mkv": b"media"}},
         banner="UNRAR 7.10 freeware Copyright (c) 1993-2025 Alexander Roshal",
-        infos=None, volumes=None, failure=None, subtitle=False, dovi=False,
+        infos=None,
+        volumes=None,
+        failure=None,
+        subtitle=False,
+        dovi=False,
     )
     monkeypatch.setattr(sys, "argv", ["xbox-import", str(source), "--plex", str(plex)])
     monkeypatch.setattr(archive.shutil, "which", lambda name: "/usr/bin/unrar")
     monkeypatch.setattr(archive, "set_ownership", lambda *args: (True, None))
     monkeypatch.setattr(archive, "validate_output", lambda *args: (True, "OK"))
-    monkeypatch.setattr(cli, "probe_file", lambda path: MediaInfo(path=path, has_dovi_profile_8=calls.dovi))
+    monkeypatch.setattr(
+        cli, "probe_file", lambda path: MediaInfo(path=path, has_dovi_profile_8=calls.dovi)
+    )
     monkeypatch.setattr(cli, "write_log_entry", lambda *args, **kwargs: None)
 
     def info(name, data, path):
         return SimpleNamespace(
-            filename=name, file_size=len(data), CRC=zlib.crc32(data),
-            host_os=archive.rarfile.RAR_OS_UNIX, mode=0o100644,
-            flags=0, file_redir=None, type=archive.rarfile.RAR_BLOCK_FILE,
-            data_offset=0, add_size=0, volume_file=str(path),
-            is_dir=lambda: False, is_file=lambda: True,
-            is_symlink=lambda: False, needs_password=lambda: False,
+            filename=name,
+            file_size=len(data),
+            CRC=zlib.crc32(data),
+            host_os=archive.rarfile.RAR_OS_UNIX,
+            mode=0o100644,
+            flags=0,
+            file_redir=None,
+            type=archive.rarfile.RAR_BLOCK_FILE,
+            data_offset=0,
+            add_size=0,
+            volume_file=str(path),
+            is_dir=lambda: False,
+            is_file=lambda: True,
+            is_symlink=lambda: False,
+            needs_password=lambda: False,
         )
 
     def metadata(path, *, errors, info_callback):
         assert errors == "strict"
         path = Path(path)
-        infos = calls.infos if calls.infos is not None else [
-            info(name, data, path) for name, data in calls.contents[path.name].items()
-        ]
+        infos = (
+            calls.infos
+            if calls.infos is not None
+            else [info(name, data, path) for name, data in calls.contents[path.name].items()]
+        )
         for item in infos:
             info_callback(item)
         return SimpleNamespace(
@@ -111,7 +131,9 @@ def rar_import(tmp_path, monkeypatch):
             subtitle.write_bytes(b"subtitle")
             result["subtitles_extracted"] = [{"success": True, "output": str(subtitle)}]
         if calls.dovi:
-            original = kwargs["dovi_backup_root"] / target.relative_to(plex_root).with_suffix(".DV.mkv")
+            original = kwargs["dovi_backup_root"] / target.relative_to(plex_root).with_suffix(
+                ".DV.mkv"
+            )
             original.parent.mkdir(parents=True, exist_ok=True)
             original.write_bytes(info.path.read_bytes())
             target.write_bytes(b"HDR10 output")
@@ -192,7 +214,18 @@ def test_legacy_partial_with_verified_source_is_preserved_without_tools(rar_impo
     assert "relocat" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("suffix", [".mkv", ".importing.mkv", ".HDR10.mkv", ".HDR10.tmp.mkv", ".en.srt", ".en.2.forced.ass", ".en.sdh.sup"])
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".mkv",
+        ".importing.mkv",
+        ".HDR10.mkv",
+        ".HDR10.tmp.mkv",
+        ".en.srt",
+        ".en.2.forced.ass",
+        ".en.sdh.sup",
+    ],
+)
 def test_unrecognized_outputs_never_adopted_or_overwritten(rar_import, suffix):
     source, plex, calls = rar_import
     target = destination(source, plex)
@@ -212,7 +245,8 @@ def test_completed_import_rehashes_source_volumes_and_all_artifacts(rar_import, 
     calls.dovi = True
     run_main()
     targets = {
-        "archive": source / "a.rar", "loose": source / "Movie.mkv",
+        "archive": source / "a.rar",
+        "loose": source / "Movie.mkv",
         "output": destination(source, plex) / "Movie.mkv",
         "subtitle": destination(source, plex) / "Movie.en.srt",
         "backup": plex / "backup/movies" / source.name / "Movie.DV.mkv",
@@ -231,7 +265,9 @@ def test_p8_backup_uses_logical_library_path_not_work_directory(rar_import):
     calls.dovi = True
     calls.contents["a.rar"] = {"Season 01/Movie.mkv": b"media"}
     run_main()
-    assert (plex / "backup/movies" / source.name / "Season 01/Movie.DV.mkv").read_bytes() == b"media"
+    assert (
+        plex / "backup/movies" / source.name / "Season 01/Movie.DV.mkv"
+    ).read_bytes() == b"media"
     assert (destination(source, plex) / "Season 01/Movie.mkv").read_bytes() == b"HDR10 output"
     run_main()
     assert len(calls.imports) == 1
@@ -322,14 +358,20 @@ def test_retry_after_publication_never_reprocesses(rar_import, monkeypatch, fail
     scan = cli.trigger_plex_scan
     save = archive.save_receipt
     if failure == "cleanup":
-        monkeypatch.setattr(archive.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(OSError("cleanup denied")))
+        monkeypatch.setattr(
+            archive.shutil,
+            "rmtree",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("cleanup denied")),
+        )
     elif failure == "scan":
         monkeypatch.setattr(cli, "trigger_plex_scan", lambda path: False)
     else:
+
         def failed_save(state, receipt):
             if any(job["phase"] == "complete" for job in receipt["jobs"].values()):
                 raise OSError("complete receipt write failed")
             save(state, receipt)
+
         monkeypatch.setattr(archive, "save_receipt", failed_save)
     run_main(1)
     monkeypatch.setattr(archive.shutil, "rmtree", rmtree)
@@ -351,7 +393,15 @@ def test_no_scan_retains_intent_for_ordinary_retry(rar_import, monkeypatch):
     assert len(calls.scans) == len(calls.imports) == 1
 
 
-@pytest.mark.parametrize("banner", ["unrar-free 0.3", "7-Zip 24.09", "UNRAR 7.10 freeware unknown vendor", "UNRAR 6.24 freeware Alexander Roshal"])
+@pytest.mark.parametrize(
+    "banner",
+    [
+        "unrar-free 0.3",
+        "7-Zip 24.09",
+        "UNRAR 7.10 freeware unknown vendor",
+        "UNRAR 6.24 freeware Alexander Roshal",
+    ],
+)
 def test_nonvendor_or_old_extractor_rejected(rar_import, banner):
     _, _, calls = rar_import
     calls.banner = banner
@@ -378,7 +428,23 @@ def test_metadata_cannot_select_any_decompression_backend(rar_import, monkeypatc
     assert not calls.extract and not calls.imports
 
 
-@pytest.mark.parametrize("feature", ["crc", "encrypted", "redirect", "symlink", "fifo", "duplicate", "ancestor", "traversal", "absolute", "backslash", "unknown-size", "version"])
+@pytest.mark.parametrize(
+    "feature",
+    [
+        "crc",
+        "encrypted",
+        "redirect",
+        "symlink",
+        "fifo",
+        "duplicate",
+        "ancestor",
+        "traversal",
+        "absolute",
+        "backslash",
+        "unknown-size",
+        "version",
+    ],
+)
 def test_unsafe_or_unsupported_metadata_fails_closed(rar_import, feature):
     source, _, calls = rar_import
     item = calls.make_info("Movie.mkv", b"media", source / "a.rar")
@@ -402,18 +468,26 @@ def test_unsafe_or_unsupported_metadata_fails_closed(rar_import, feature):
     elif feature == "version":
         item.flags = archive.rarfile.RAR_FILE_VERSION
     else:
-        item.filename = {"traversal": "../Movie.mkv", "absolute": "/Movie.mkv", "backslash": r"a\Movie.mkv"}[feature]
+        item.filename = {
+            "traversal": "../Movie.mkv",
+            "absolute": "/Movie.mkv",
+            "backslash": r"a\Movie.mkv",
+        }[feature]
     run_main(1)
     assert not calls.imports and not calls.extract and not calls.scans
 
 
-@pytest.mark.parametrize("problem", ["missing", "bad-header", "truncated", "unfinished", "bad-chain"])
+@pytest.mark.parametrize(
+    "problem", ["missing", "bad-header", "truncated", "unfinished", "bad-chain"]
+)
 def test_strict_multipart_errors_block_all_imports(rar_import, monkeypatch, problem):
     source, _, calls = rar_import
     if problem in {"missing", "bad-header"}:
+
         def broken(*args, **kwargs):
             assert kwargs["errors"] == "strict"
             raise archive.rarfile.BadRarFile(problem)
+
         monkeypatch.setattr(archive.rarfile, "RarFile", broken)
     else:
         item = calls.make_info("Movie.mkv", b"media", source / "a.rar")
@@ -421,7 +495,11 @@ def test_strict_multipart_errors_block_all_imports(rar_import, monkeypatch, prob
         if problem == "truncated":
             item.add_size = 1000
         else:
-            item.flags = archive.rarfile.RAR_FILE_SPLIT_AFTER if problem == "unfinished" else archive.rarfile.RAR_FILE_SPLIT_BEFORE
+            item.flags = (
+                archive.rarfile.RAR_FILE_SPLIT_AFTER
+                if problem == "unfinished"
+                else archive.rarfile.RAR_FILE_SPLIT_BEFORE
+            )
     run_main(1)
     assert not calls.imports and not calls.extract
 
@@ -536,7 +614,9 @@ def test_standalone_media_does_not_inspect_neighbor_archives(rar_import, monkeyp
     loose = source / "Movie.mkv"
     loose.write_bytes(b"media")
     monkeypatch.setattr(sys, "argv", ["xbox-import", str(loose), "--plex", str(plex)])
-    monkeypatch.setattr(cli, "discover_rar_archives", lambda *a: pytest.fail("neighbor archive inspection"))
+    monkeypatch.setattr(
+        cli, "discover_rar_archives", lambda *a: pytest.fail("neighbor archive inspection")
+    )
     run_main()
     assert calls.imports == [loose] and not calls.extract
 
@@ -592,13 +672,18 @@ def test_processing_failures_retain_stage_without_publication(rar_import, monkey
     source, plex, calls = rar_import
     if failure in {"probe", "incompatible"}:
         monkeypatch.setattr(
-            cli, "probe_file", lambda path: MediaInfo(
-                path=path, probe_error="probe failed" if failure == "probe" else None,
+            cli,
+            "probe_file",
+            lambda path: MediaInfo(
+                path=path,
+                probe_error="probe failed" if failure == "probe" else None,
                 incompatible_reason="incompatible" if failure == "incompatible" else None,
             ),
         )
     elif failure == "import":
-        monkeypatch.setattr(cli, "import_file", lambda *a, **k: {"status": "failed", "error": "failed"})
+        monkeypatch.setattr(
+            cli, "import_file", lambda *a, **k: {"status": "failed", "error": "failed"}
+        )
     elif failure == "ownership":
         monkeypatch.setattr(archive, "set_ownership", lambda *a: (False, "permission denied"))
     else:
@@ -694,9 +779,7 @@ def test_state_symlink_is_never_followed(rar_import):
 
 
 @pytest.mark.parametrize("failure", ["interrupt", "oserror"])
-def test_dovi_backup_stage_checkpoint_survives_copy_failure(
-    rar_import, monkeypatch, failure
-):
+def test_dovi_backup_stage_checkpoint_survives_copy_failure(rar_import, monkeypatch, failure):
     source, plex, calls = rar_import
     calls.dovi = True
     copy = archive.shutil.copy2
@@ -753,9 +836,7 @@ def test_archive_and_loose_samples_use_canonical_filter(rar_import):
     run_main()
     assert calls.imports == [source / "Movie.mkv"]
     assert not calls.extract
-    assert sorted(path.name for path in destination(source, plex).iterdir()) == [
-        "Movie.mkv"
-    ]
+    assert sorted(path.name for path in destination(source, plex).iterdir()) == ["Movie.mkv"]
     receipt = json.loads(receipt_path(plex).read_text())
     assert set(receipt["manifest"]["inventory"]["members"]) == {"Movie.mkv"}
     assert set(receipt["manifest"]["inventory"]["loose"]) == {"Movie.mkv"}
@@ -781,9 +862,7 @@ def test_ignored_loose_sample_symlink_is_not_followed(rar_import):
     assert not calls.extract and not calls.imports
 
 
-def test_ownership_eperm_fails_before_publication_and_can_retry(
-    rar_import, monkeypatch
-):
+def test_ownership_eperm_fails_before_publication_and_can_retry(rar_import, monkeypatch):
     source, plex, calls = rar_import
     (source / "Movie.mkv").write_bytes(b"media")
     ownership = archive.set_ownership
@@ -825,9 +904,7 @@ def test_extractor_nonzero_status_is_fatal_without_fallback(rar_import, monkeypa
     assert not calls.imports and not calls.scans
 
 
-def test_archive_source_destination_overlap_fails_before_extraction(
-    rar_import, monkeypatch
-):
+def test_archive_source_destination_overlap_fails_before_extraction(rar_import, monkeypatch):
     source, _, calls = rar_import
     monkeypatch.setattr(
         sys,
@@ -848,9 +925,7 @@ def test_different_source_cannot_reuse_destination_receipt(rar_import):
     assert len(calls.imports) == 1
 
 
-def test_batch_cleanup_waits_for_all_members_then_skips_completed_on_retry(
-    rar_import, monkeypatch
-):
+def test_batch_cleanup_waits_for_all_members_then_skips_completed_on_retry(rar_import, monkeypatch):
     _, plex, calls = rar_import
     calls.contents["a.rar"] = {"A.mkv": b"first", "Z.mkv": b"second"}
     importer = cli.import_file
@@ -879,6 +954,7 @@ def test_inflight_source_changes_prevent_publication(rar_import, monkeypatch, ch
     source, plex, calls = rar_import
     changed = source / "a.rar"
     if checkpoint == "extraction":
+
         def change_after_extraction(stage):
             changed.write_bytes(b"changed")
 

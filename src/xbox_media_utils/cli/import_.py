@@ -420,9 +420,16 @@ def main():
         if archives:
             try:
                 status = run_archive_import(
-                    args.source, dest_base, plex_root, dovi_backup_root, archives,
-                    import_file=import_file, probe_file=probe_file, scan=trigger_plex_scan,
-                    dry_run=args.dry_run, no_plex_scan=args.no_plex_scan,
+                    args.source,
+                    dest_base,
+                    plex_root,
+                    dovi_backup_root,
+                    archives,
+                    import_file=import_file,
+                    probe_file=probe_file,
+                    scan=trigger_plex_scan,
+                    dry_run=args.dry_run,
+                    no_plex_scan=args.no_plex_scan,
                     use_hardware=use_hardware,
                 )
             except KeyboardInterrupt:

@@ -97,13 +97,19 @@ def vendor_unrar() -> str:
     if executable is None:
         raise RuntimeError("RAR imports require host-provided RARLAB unrar with -ol- support")
     result = subprocess.run(
-        [executable, "-cfg-", "-p-"], stdin=subprocess.DEVNULL,
-        capture_output=True, text=True, errors="replace", check=False, timeout=10,
+        [executable, "-cfg-", "-p-"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=10,
     )
     banner = result.stdout + result.stderr
     version = re.search(r"\bUNRAR\s+(\d+)\.(\d+)\s+freeware\b", banner, re.IGNORECASE)
     if (
-        version is None or int(version[1]) < 7
+        version is None
+        or int(version[1]) < 7
         or not re.search(r"Alexander\s+Roshal|RARLAB", banner, re.IGNORECASE)
         or re.search(r"unrar[- ]free|bsdtar|7-zip|the unarchiver", banner, re.IGNORECASE)
     ):
@@ -147,13 +153,21 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
             elif split_name is not None:
                 raise RuntimeError("Incomplete multipart member")
             split_name = header.filename if header.flags & rarfile.RAR_FILE_SPLIT_AFTER else None
+
         # 4.2 can decompress compressed archive comments during construction.
         # Refuse that route, too: no rarfile backend selection may ever run.
-        with warnings.catch_warnings(), patch.object(
-            rarfile, "tool_setup", side_effect=RuntimeError("Compressed RAR comments unsupported")
+        with (
+            warnings.catch_warnings(),
+            patch.object(
+                rarfile,
+                "tool_setup",
+                side_effect=RuntimeError("Compressed RAR comments unsupported"),
+            ),
         ):
             warnings.simplefilter("error", rarfile.UnsupportedWarning)
-            with rarfile.RarFile(str(archive), errors="strict", info_callback=inspect_header) as metadata:
+            with rarfile.RarFile(
+                str(archive), errors="strict", info_callback=inspect_header
+            ) as metadata:
                 if metadata.needs_password() or metadata.strerror():
                     raise RuntimeError(f"Encrypted or incomplete RAR: {archive}")
                 infos = metadata.infolist()
@@ -184,10 +198,15 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
                 logical_dirs.add(logical)
                 continue
             if (
-                not info.is_file() or type(info.file_size) is not int or info.file_size < 0
-                or type(info.CRC) is not int or not 0 <= info.CRC <= 0xFFFFFFFF
-                or (info.host_os == rarfile.RAR_OS_UNIX and stat.S_IFMT(info.mode or 0)
-                    not in {0, stat.S_IFREG})
+                not info.is_file()
+                or type(info.file_size) is not int
+                or info.file_size < 0
+                or type(info.CRC) is not int
+                or not 0 <= info.CRC <= 0xFFFFFFFF
+                or (
+                    info.host_os == rarfile.RAR_OS_UNIX
+                    and stat.S_IFMT(info.mode or 0) not in {0, stat.S_IFREG}
+                )
                 or (getattr(info, "file_flags", 0) or 0) & rarfile.RAR5_FILE_FLAG_UNKNOWN_SIZE
                 or getattr(info, "file_version", None)
                 or info.flags & rarfile.RAR_FILE_VERSION
@@ -199,14 +218,20 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
             if relative.suffix.lower() in MEDIA_EXTENSIONS and not is_sample_file(relative):
                 media_count += 1
                 members[logical] = {
-                    "size": info.file_size, "crc": info.CRC,
-                    "archive": str(archive.relative_to(source)), "member": name,
+                    "size": info.file_size,
+                    "crc": info.CRC,
+                    "archive": str(archive.relative_to(source)),
+                    "member": name,
                 }
         if not media_count:
             raise RuntimeError(f"No media files found in archive; source retained: {archive}")
         sets.append({"archive": str(archive.relative_to(source)), "volumes": volume_hashes})
     for name in logical_files | logical_dirs:
-        if any(parent.as_posix() in logical_files for parent in Path(name).parents if str(parent) != "."):
+        if any(
+            parent.as_posix() in logical_files
+            for parent in Path(name).parents
+            if str(parent) != "."
+        ):
             raise RuntimeError(f"RAR file/directory collision: {name}")
     loose = {}
     for path in sorted(source.rglob("*")):
@@ -219,10 +244,16 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
     if not members:
         raise RuntimeError("No media files found")
     archive_paths = sorted(
-        str(path.relative_to(source)) for path in source.rglob("*")
+        str(path.relative_to(source))
+        for path in source.rglob("*")
         if path.suffix.lower() == ".rar" or re.fullmatch(r"\.[r-z]\d{2}", path.suffix.lower())
     )
-    return {"sets": sets, "loose": loose, "members": members, "archive_paths": archive_paths}, members
+    return {
+        "sets": sets,
+        "loose": loose,
+        "members": members,
+        "archive_paths": archive_paths,
+    }, members
 
 
 def private_dir(path: Path) -> None:
@@ -306,23 +337,48 @@ def token(value) -> bool:
 def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
     path = state / "receipt.json"
     if not path.exists() and not path.is_symlink():
-        return {"version": 1, "manifest": manifest, "work": None, "jobs": {}, "extract": {}, "scan": "pending"}
+        return {
+            "version": 1,
+            "manifest": manifest,
+            "work": None,
+            "jobs": {},
+            "extract": {},
+            "scan": "pending",
+        }
     private_file(path)
     with open(path, encoding="utf-8") as stream:
         receipt = json.load(stream)
-    if not isinstance(receipt, dict) or set(receipt) != {"version", "manifest", "work", "jobs", "extract", "scan"}:
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "version",
+        "manifest",
+        "work",
+        "jobs",
+        "extract",
+        "scan",
+    }:
         raise RuntimeError("Invalid import receipt schema")
-    if type(receipt["version"]) is not int or receipt["version"] != 1 or receipt["manifest"] != manifest:
-        raise RuntimeError("Source/archive/configuration changed or unsupported receipt; refusing existing import")
+    if (
+        type(receipt["version"]) is not int
+        or receipt["version"] != 1
+        or receipt["manifest"] != manifest
+    ):
+        raise RuntimeError(
+            "Source/archive/configuration changed or unsupported receipt; refusing existing import"
+        )
     if not isinstance(receipt["scan"], str) or receipt["scan"] not in {"pending", "complete"}:
         raise RuntimeError("Invalid scan receipt")
     work = receipt["work"]
     if work is not None:
-        if not isinstance(work, dict) or set(work) != {"token", "primary", "backup"} or not token(work["token"]):
+        if (
+            not isinstance(work, dict)
+            or set(work) != {"token", "primary", "backup"}
+            or not token(work["token"])
+        ):
             raise RuntimeError("Invalid work receipt")
         for identity in (work["primary"], work["backup"]):
             if identity is not None and (
-                not isinstance(identity, dict) or set(identity) != {"dev", "ino"}
+                not isinstance(identity, dict)
+                or set(identity) != {"dev", "ino"}
                 or any(type(value) is not int or value < 0 for value in identity.values())
             ):
                 raise RuntimeError("Invalid stage identity")
@@ -334,18 +390,35 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
     if not isinstance(receipt["jobs"], dict):
         raise RuntimeError("Invalid jobs receipt")
     for name, job in receipt["jobs"].items():
-        if name not in members or not isinstance(job, dict) or set(job) != {"phase", "token", "artifacts"}:
+        if (
+            name not in members
+            or not isinstance(job, dict)
+            or set(job) != {"phase", "token", "artifacts"}
+        ):
             raise RuntimeError("Invalid member receipt")
-        if not isinstance(job["phase"], str) or job["phase"] not in {"working", "prepared", "complete"} or not token(job["token"]):
+        if (
+            not isinstance(job["phase"], str)
+            or job["phase"] not in {"working", "prepared", "complete"}
+            or not token(job["token"])
+        ):
             raise RuntimeError("Invalid member phase")
-        if not isinstance(job["artifacts"], list) or (job["phase"] != "working" and not job["artifacts"]):
+        if not isinstance(job["artifacts"], list) or (
+            job["phase"] != "working" and not job["artifacts"]
+        ):
             raise RuntimeError("Invalid artifact receipt")
         if job["phase"] == "working" and job["artifacts"]:
             raise RuntimeError("Working receipt cannot authorize publication")
         targets = set()
         primary_count = 0
         for artifact in job["artifacts"]:
-            if not isinstance(artifact, dict) or set(artifact) != {"area", "name", "sha256", "size", "dev", "ino"}:
+            if not isinstance(artifact, dict) or set(artifact) != {
+                "area",
+                "name",
+                "sha256",
+                "size",
+                "dev",
+                "ino",
+            }:
                 raise RuntimeError("Invalid artifact schema")
             area = artifact["area"]
             relative = safe_relative(artifact["name"])
@@ -369,9 +442,15 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
             if (area, str(relative)) in targets:
                 raise RuntimeError("Duplicate artifact")
             targets.add((area, str(relative)))
-            if not isinstance(artifact["sha256"], str) or re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) is None:
+            if (
+                not isinstance(artifact["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) is None
+            ):
                 raise RuntimeError("Invalid artifact digest")
-            if any(type(artifact[key]) is not int or artifact[key] < 0 for key in ("size", "dev", "ino")):
+            if any(
+                type(artifact[key]) is not int or artifact[key] < 0
+                for key in ("size", "dev", "ino")
+            ):
                 raise RuntimeError("Invalid artifact identity")
         if job["phase"] != "working" and primary_count != 1:
             raise RuntimeError("Receipt must identify exactly one primary media artifact")
@@ -379,10 +458,14 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
         raise RuntimeError("Missing operation ownership")
     if (receipt["jobs"] or receipt["extract"]) and work["primary"] is None:
         raise RuntimeError("Missing stage ownership")
-    if any(
-        artifact["area"] == "backup"
-        for job in receipt["jobs"].values() for artifact in job["artifacts"]
-    ) and work["backup"] is None:
+    if (
+        any(
+            artifact["area"] == "backup"
+            for job in receipt["jobs"].values()
+            for artifact in job["artifacts"]
+        )
+        and work["backup"] is None
+    ):
         raise RuntimeError("Missing backup stage ownership")
     return receipt
 
@@ -430,7 +513,9 @@ def create_work(state: Path, receipt: dict, area: str, save_state: Path) -> Path
     return path
 
 
-def reserve_outputs(members: dict, dest: Path, backup: Path, base_relative: Path, receipt: dict) -> None:
+def reserve_outputs(
+    members: dict, dest: Path, backup: Path, base_relative: Path, receipt: dict
+) -> None:
     """Reserve conservative generated names across the entire batch, before tools run."""
     reserved = {}
     for name in members:
@@ -438,19 +523,31 @@ def reserve_outputs(members: dict, dest: Path, backup: Path, base_relative: Path
         if relative.name.endswith(".HDR10.mkv"):
             raise RuntimeError(f"Reserved HDR10 input name: {name}")
         candidates = {dest / relative}
-        candidates.update(dest / relative.with_name(relative.stem + suffix) for suffix in (
-            ".mkv", ".importing.mkv", ".HDR10.mkv", ".HDR10.tmp.mkv",
-        ))
+        candidates.update(
+            dest / relative.with_name(relative.stem + suffix)
+            for suffix in (
+                ".mkv",
+                ".importing.mkv",
+                ".HDR10.mkv",
+                ".HDR10.tmp.mkv",
+            )
+        )
         candidates.add(backup / base_relative / relative.with_suffix(".DV.mkv"))
         for target in candidates:
             check_path(target.parent, directory=True, missing=True)
             for previous, owner in reserved.items():
-                if owner != name and (target == previous or target in previous.parents or previous in target.parents):
+                if owner != name and (
+                    target == previous or target in previous.parents or previous in target.parents
+                ):
                     raise RuntimeError(f"Import destination collision: {target}")
             reserved[target] = name
             job = receipt["jobs"].get(name)
             recognized = job is not None and job["phase"] in {"prepared", "complete"}
-            authorized = {artifact_target(item, dest, backup) for item in job["artifacts"]} if recognized else set()
+            authorized = (
+                {artifact_target(item, dest, backup) for item in job["artifacts"]}
+                if recognized
+                else set()
+            )
             if (target.exists() or target.is_symlink()) and target not in authorized:
                 raise RuntimeError(
                     f"Unrecognized destination already exists (including legacy partials): {target}; "
@@ -470,7 +567,9 @@ def reserve_outputs(members: dict, dest: Path, backup: Path, base_relative: Path
                     )
 
 
-def staged_artifact(artifact: dict, job: dict, work: Path, backup_work: Path, base_relative: Path) -> Path:
+def staged_artifact(
+    artifact: dict, job: dict, work: Path, backup_work: Path, base_relative: Path
+) -> Path:
     if artifact["area"] == "primary":
         return work / "jobs" / job["token"] / "primary" / base_relative / artifact["name"]
     return backup_work / "files" / job["token"] / artifact["name"]
@@ -489,7 +588,15 @@ def verify_artifact(path: Path, artifact: dict, identity: bool = False) -> None:
         raise RuntimeError(f"Destination is not this operation's published inode: {path}")
 
 
-def publish(job: dict, work: Path, backup_work: Path, dest: Path, backup: Path, base_relative: Path, plex: Path) -> None:
+def publish(
+    job: dict,
+    work: Path,
+    backup_work: Path,
+    dest: Path,
+    backup: Path,
+    base_relative: Path,
+    plex: Path,
+) -> None:
     for artifact in job["artifacts"]:
         staged = staged_artifact(artifact, job, work, backup_work, base_relative)
         verify_artifact(staged, artifact, identity=True)
@@ -510,9 +617,18 @@ def publish(job: dict, work: Path, backup_work: Path, dest: Path, backup: Path, 
 
 
 def run_archive_import(
-    source: Path, dest: Path, plex: Path, backup: Path, archives: list[Path],
-    *, import_file, probe_file, scan, dry_run: bool = False,
-    no_plex_scan: bool = False, use_hardware: bool = True,
+    source: Path,
+    dest: Path,
+    plex: Path,
+    backup: Path,
+    archives: list[Path],
+    *,
+    import_file,
+    probe_file,
+    scan,
+    dry_run: bool = False,
+    no_plex_scan: bool = False,
+    use_hardware: bool = True,
 ) -> int:
     """Return CLI status; caller reports errors without discarding recovery state."""
     for path in (source, dest, plex, backup):
@@ -539,8 +655,12 @@ def run_archive_import(
     def plan():
         items, members = inventory(source, archives)
         manifest = {
-            "source": str(source), "destination": str(dest), "backup": str(backup),
-            "base_relative": str(base_relative), "hardware": use_hardware, "inventory": items,
+            "source": str(source),
+            "destination": str(dest),
+            "backup": str(backup),
+            "base_relative": str(base_relative),
+            "hardware": use_hardware,
+            "inventory": items,
         }
         return manifest, members
 
@@ -575,8 +695,11 @@ def run_archive_import(
         receipt = load_receipt(state, manifest, members)
         loose = manifest["inventory"]["loose"]
         reusable = [
-            name for name, member in members.items() if name in loose
-            and loose[name]["size"] == member["size"] and loose[name]["crc"] == member["crc"]
+            name
+            for name, member in members.items()
+            if name in loose
+            and loose[name]["size"] == member["size"]
+            and loose[name]["crc"] == member["crc"]
         ]
         print(f"Verified loose media available for reuse (no extraction): {len(reusable)}")
         reserve_outputs(members, dest, backup, base_relative, receipt)
@@ -588,7 +711,9 @@ def run_archive_import(
         if receipt["work"] is None:
             receipt["work"] = {"token": uuid.uuid4().hex, "primary": None, "backup": None}
             save_receipt(state, receipt)
-        pending = [name for name in members if receipt["jobs"].get(name, {}).get("phase") != "complete"]
+        pending = [
+            name for name in members if receipt["jobs"].get(name, {}).get("phase") != "complete"
+        ]
         work = work_root(state, receipt["work"])
         backup_work = work_root(backup_state, receipt["work"])
         if pending:
@@ -628,15 +753,31 @@ def run_archive_import(
                 extract_dir = work / "extract" / extract_token
                 extract_dir.mkdir(parents=True, mode=0o700)
                 completed = subprocess.run(
-                    [executable, "x", "-cfg-", "-ol-", "-o-", "-p-", "-idq", "--",
-                     str(source / archive_name), str(extract_dir) + os.sep],
-                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    errors="replace", cwd=extract_dir, check=False,
+                    [
+                        executable,
+                        "x",
+                        "-cfg-",
+                        "-ol-",
+                        "-o-",
+                        "-p-",
+                        "-idq",
+                        "--",
+                        str(source / archive_name),
+                        str(extract_dir) + os.sep,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    cwd=extract_dir,
+                    check=False,
                 )
                 own_tree(extract_dir)
                 if completed.returncode != 0:
                     detail = (completed.stderr or completed.stdout or "Extraction failed")[-2000:]
-                    raise RuntimeError(f"unrar failed (exit {completed.returncode}): {detail}; retained at {work}")
+                    raise RuntimeError(
+                        f"unrar failed (exit {completed.returncode}): {detail}; retained at {work}"
+                    )
             if not matches(extract_dir / member["member"], member):
                 raise RuntimeError(f"Extracted member checksum failed: {name}; retained at {work}")
             selected[name] = extract_dir / member["member"]
@@ -656,15 +797,23 @@ def run_archive_import(
                 job_root = work / "jobs" / job["token"]
                 primary_root = job_root / "primary"
                 result = import_file(
-                    info, primary_root / base_relative / Path(name).parent, primary_root,
-                    dovi_backup_root=job_root / "backup", use_hardware=use_hardware,
+                    info,
+                    primary_root / base_relative / Path(name).parent,
+                    primary_root,
+                    dovi_backup_root=job_root / "backup",
+                    use_hardware=use_hardware,
                 )
                 if result["status"] != "success":
-                    raise RuntimeError(f"Import failed: {result.get('error', result['status'])}; retained at {work}")
+                    raise RuntimeError(
+                        f"Import failed: {result.get('error', result['status'])}; retained at {work}"
+                    )
                 own_tree(job_root)
                 if digest(input_path) != source_hash:
                     raise RuntimeError("Import input changed; outputs retained, not published")
-                if result["action"] == "copy" and digest(Path(result["destination"])) != source_hash:
+                if (
+                    result["action"] == "copy"
+                    and digest(Path(result["destination"])) != source_hash
+                ):
                     raise RuntimeError("Copied output does not match source")
                 destination = Path(result["destination"])
                 if not destination.is_file():
@@ -679,11 +828,16 @@ def run_archive_import(
                     if not subtitle.get("success") or not subtitle.get("output"):
                         raise RuntimeError("Subtitle extraction incomplete; outputs retained")
                     allowed_primary.add(Path(subtitle["output"]))
-                expected_backup = job_root / "backup" / base_relative / Path(name).with_suffix(".DV.mkv")
+                expected_backup = (
+                    job_root / "backup" / base_relative / Path(name).with_suffix(".DV.mkv")
+                )
                 if info.has_dovi_profile_8 and not expected_backup.is_file():
                     raise RuntimeError("DoVi original backup missing; refusing publication")
                 artifacts = []
-                for area, root in (("primary", primary_root / base_relative), ("backup", job_root / "backup")):
+                for area, root in (
+                    ("primary", primary_root / base_relative),
+                    ("backup", job_root / "backup"),
+                ):
                     if not root.exists():
                         continue
                     for path in sorted(root.rglob("*")):
@@ -691,9 +845,15 @@ def run_archive_import(
                             continue
                         relative = path.relative_to(root)
                         if area == "primary" and path not in allowed_primary:
-                            raise RuntimeError(f"Unexpected/incomplete primary artifact retained: {path}")
-                        if area == "backup" and (path != expected_backup or digest(path) != source_hash):
-                            raise RuntimeError("DoVi backup is not the original source at its logical path")
+                            raise RuntimeError(
+                                f"Unexpected/incomplete primary artifact retained: {path}"
+                            )
+                        if area == "backup" and (
+                            path != expected_backup or digest(path) != source_hash
+                        ):
+                            raise RuntimeError(
+                                "DoVi backup is not the original source at its logical path"
+                            )
                         if area == "backup":
                             check_path(backup, directory=True, missing=True)
                             backup.mkdir(parents=True, exist_ok=True)
@@ -709,10 +869,16 @@ def run_archive_import(
                             os.fsync(stream.fileno())
                         value = digest(path)
                         identity = path.stat()
-                        artifacts.append({
-                            "area": area, "name": str(relative), "sha256": value["sha256"],
-                            "size": value["size"], "dev": identity.st_dev, "ino": identity.st_ino,
-                        })
+                        artifacts.append(
+                            {
+                                "area": area,
+                                "name": str(relative),
+                                "sha256": value["sha256"],
+                                "size": value["size"],
+                                "dev": identity.st_dev,
+                                "ino": identity.st_ino,
+                            }
+                        )
                 if plan()[0] != manifest:
                     raise RuntimeError("Source/archive changed during import; no publication")
                 sync_tree(work)
@@ -721,7 +887,9 @@ def run_archive_import(
                 job["artifacts"] = artifacts
                 job["phase"] = "prepared"
                 save_receipt(state, receipt)  # Must succeed before the first link.
-                load_receipt(state, manifest, members)  # Validate generated paths as untrusted input.
+                load_receipt(
+                    state, manifest, members
+                )  # Validate generated paths as untrusted input.
             owned_work(state, receipt["work"], "primary")
             if any(artifact["area"] == "backup" for artifact in job["artifacts"]):
                 owned_work(backup_state, receipt["work"], "backup")
