@@ -139,7 +139,7 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
                 raise RuntimeError(f"Truncated RAR volume: {volume}")
             if header.type != rarfile.RAR_BLOCK_FILE:
                 return
-            if header.flags & rarfile.RAR_FILE_VERSION:
+            if header.flags & rarfile.RAR_FILE_VERSION or getattr(header, "file_version", None):
                 raise RuntimeError("Versioned RAR members unsupported")
             if header.flags & rarfile.RAR_FILE_SPLIT_BEFORE:
                 if split_name != header.filename:
@@ -188,6 +188,7 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
                 or type(info.CRC) is not int or not 0 <= info.CRC <= 0xFFFFFFFF
                 or (info.host_os == rarfile.RAR_OS_UNIX and stat.S_IFMT(info.mode or 0)
                     not in {0, stat.S_IFREG})
+                or (getattr(info, "file_flags", 0) or 0) & rarfile.RAR5_FILE_FLAG_UNKNOWN_SIZE
                 or getattr(info, "file_version", None)
                 or info.flags & rarfile.RAR_FILE_VERSION
             ):
@@ -204,7 +205,7 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
         if not media_count:
             raise RuntimeError(f"No media files found in archive; source retained: {archive}")
         sets.append({"archive": str(archive.relative_to(source)), "volumes": volume_hashes})
-    for name in logical_files:
+    for name in logical_files | logical_dirs:
         if any(parent.as_posix() in logical_files for parent in Path(name).parents if str(parent) != "."):
             raise RuntimeError(f"RAR file/directory collision: {name}")
     loose = {}
@@ -217,7 +218,11 @@ def inventory(source: Path, archives: list[Path]) -> tuple[dict, dict]:
             members[relative] = {**loose[relative], "archive": None, "member": relative}
     if not members:
         raise RuntimeError("No media files found")
-    return {"sets": sets, "loose": loose, "members": members}, members
+    archive_paths = sorted(
+        str(path.relative_to(source)) for path in source.rglob("*")
+        if path.suffix.lower() == ".rar" or re.fullmatch(r"\.[r-z]\d{2}", path.suffix.lower())
+    )
+    return {"sets": sets, "loose": loose, "members": members, "archive_paths": archive_paths}, members
 
 
 def private_dir(path: Path) -> None:
@@ -307,7 +312,7 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
         receipt = json.load(stream)
     if not isinstance(receipt, dict) or set(receipt) != {"version", "manifest", "work", "jobs", "extract", "scan"}:
         raise RuntimeError("Invalid import receipt schema")
-    if receipt["version"] != 1 or receipt["manifest"] != manifest:
+    if type(receipt["version"]) is not int or receipt["version"] != 1 or receipt["manifest"] != manifest:
         raise RuntimeError("Source/archive/configuration changed or unsupported receipt; refusing existing import")
     if not isinstance(receipt["scan"], str) or receipt["scan"] not in {"pending", "complete"}:
         raise RuntimeError("Invalid scan receipt")
@@ -338,6 +343,7 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
         if job["phase"] == "working" and job["artifacts"]:
             raise RuntimeError("Working receipt cannot authorize publication")
         targets = set()
+        primary_count = 0
         for artifact in job["artifacts"]:
             if not isinstance(artifact, dict) or set(artifact) != {"area", "name", "sha256", "size", "dev", "ino"}:
                 raise RuntimeError("Invalid artifact schema")
@@ -345,8 +351,15 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
             relative = safe_relative(artifact["name"])
             logical = Path(name)
             if area == "primary":
-                if relative.parent != logical.parent or not relative.name.startswith(logical.stem + "."):
-                    raise RuntimeError("Artifact outside logical media directory")
+                main_names = {logical, logical.with_suffix(".mkv")}
+                if relative in main_names:
+                    primary_count += 1
+                elif (
+                    relative.parent != logical.parent
+                    or not relative.name.startswith(logical.stem + ".en.")
+                    or relative.suffix not in {".srt", ".ass", ".sup"}
+                ):
+                    raise RuntimeError("Artifact outside planned media/sidecar names")
             elif area == "backup":
                 expected = Path(manifest["base_relative"]) / logical.with_suffix(".DV.mkv")
                 if relative != expected:
@@ -360,10 +373,17 @@ def load_receipt(state: Path, manifest: dict, members: dict) -> dict:
                 raise RuntimeError("Invalid artifact digest")
             if any(type(artifact[key]) is not int or artifact[key] < 0 for key in ("size", "dev", "ino")):
                 raise RuntimeError("Invalid artifact identity")
+        if job["phase"] != "working" and primary_count != 1:
+            raise RuntimeError("Receipt must identify exactly one primary media artifact")
     if (receipt["jobs"] or receipt["extract"]) and work is None:
         raise RuntimeError("Missing operation ownership")
-    if any(job["phase"] == "prepared" for job in receipt["jobs"].values()) and work["primary"] is None:
-        raise RuntimeError("Missing prepared stage ownership")
+    if (receipt["jobs"] or receipt["extract"]) and work["primary"] is None:
+        raise RuntimeError("Missing stage ownership")
+    if any(
+        artifact["area"] == "backup"
+        for job in receipt["jobs"].values() for artifact in job["artifacts"]
+    ) and work["backup"] is None:
+        raise RuntimeError("Missing backup stage ownership")
     return receipt
 
 
@@ -553,6 +573,12 @@ def run_archive_import(
     with destination_lock(state):
         manifest, members = plan()
         receipt = load_receipt(state, manifest, members)
+        loose = manifest["inventory"]["loose"]
+        reusable = [
+            name for name, member in members.items() if name in loose
+            and loose[name]["size"] == member["size"] and loose[name]["crc"] == member["crc"]
+        ]
+        print(f"Verified loose media available for reuse (no extraction): {len(reusable)}")
         reserve_outputs(members, dest, backup, base_relative, receipt)
         # Independently rehash completed artifacts before deciding to skip any work.
         for job in receipt["jobs"].values():
