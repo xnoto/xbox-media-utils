@@ -1277,12 +1277,14 @@ def source_verification_io(rar_import, monkeypatch):
     opened = archive.os.open
     fdopen = archive.os.fdopen
     descriptors = {}
-    counts = SimpleNamespace(opens=[], bytes={})
+    counts = SimpleNamespace(opens=[], bytes={}, artifacts=set())
 
     def tracked_open(path, flags, *args, **kwargs):
         fd = opened(path, flags, *args, **kwargs)
         candidate = Path(os.fsdecode(path))
-        if source in candidate.parents and flags & os.O_ACCMODE == os.O_RDONLY:
+        if (
+            source in candidate.parents or candidate in counts.artifacts
+        ) and flags & os.O_ACCMODE == os.O_RDONLY:
             descriptors[fd] = candidate
             counts.opens.append(candidate)
         return fd
@@ -1386,3 +1388,42 @@ def test_unverified_receipt_cannot_authorize_actions(
     assert path.read_bytes() == before
     assert sorted(path.parent.glob("work-*")) == stages
     assert len(calls.imports) == import_count and len(calls.scans) == scan_count
+
+
+
+def test_completed_retries_freshly_read_source_and_artifact_bytes_once(
+    rar_import, source_verification_io, monkeypatch
+):
+    source, plex, calls = rar_import
+    loose = source / "Movie.mkv"
+    loose.write_bytes(b"media")
+    calls.subtitle = calls.dovi = True
+    run_main()
+    counts = source_verification_io
+    counts.artifacts.update(
+        {
+            destination(source, plex) / "Movie.mkv",
+            destination(source, plex) / "Movie.en.srt",
+            plex / "backup/movies" / source.name / "Movie.DV.mkv",
+        }
+    )
+    inputs = {source / "a.rar", loose}
+    expected = inputs | counts.artifacts
+    identities = {path: archive.file_identity(path.stat()) for path in expected}
+    sizes = {path: path.stat().st_size for path in expected}
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("completed retry invoked processing")
+
+    monkeypatch.setattr(cli, "probe_file", forbidden)
+    monkeypatch.setattr(cli, "import_file", forbidden)
+    for _ in range(2):
+        counts.opens.clear()
+        counts.bytes.clear()
+        run_main()
+        assert set(counts.opens) == expected
+        assert len(counts.opens) == len(expected)
+        assert counts.bytes == sizes
+        assert {path: archive.file_identity(path.stat()) for path in expected} == identities
+    assert len(calls.imports) == 1
+    assert not calls.extract
