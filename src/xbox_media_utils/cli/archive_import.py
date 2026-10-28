@@ -79,7 +79,7 @@ class Verification:
     def tree(self) -> dict[Path, tuple[int, ...]]:
         check_path(self.source, directory=True)
         root = self.source.lstat()
-        result = {self.source: (root.st_dev, root.st_ino)}
+        result: dict[Path, tuple[int, ...]] = {self.source: (root.st_dev, root.st_ino)}
 
         def failed(error):
             raise error
@@ -192,7 +192,7 @@ def inventory(
     """Inspect strict metadata and preflight before the invocation's full content inventory."""
     progress("[inventory] Inspecting archive metadata and source paths")
     verification = verification if verification is not None else Verification(source)
-    sets = []
+    sets: list[dict] = []
     members = {}
     logical_files = set()
     logical_dirs = set()
@@ -243,13 +243,13 @@ def inventory(
             raise RuntimeError("Incomplete multipart member")
         if not volumes or volumes[0] != archive:
             raise RuntimeError(f"Invalid RAR volume inventory: {archive}")
-        volume_hashes = {}
+        volume_hashes: dict[str, dict] = {}
         for volume in volumes:
             check_path(volume)
             volume.relative_to(source)
             if volume.parent != archive.parent:
                 raise RuntimeError(f"Unexpected RAR volume location: {volume}")
-            volume_hashes[str(volume.relative_to(source))] = None
+            volume_hashes[str(volume.relative_to(source))] = {}
         verification.unchanged(archive)
         media_count = 0
         for info in infos:
@@ -736,8 +736,8 @@ def run_archive_import(
         for path in (root.parent, root):
             check_path(path, directory=True, missing=True)
             if path.exists():
-                value = path.lstat()
-                if value.st_uid != os.geteuid() or value.st_mode & 0o077:
+                state_stat = path.lstat()
+                if state_stat.st_uid != os.geteuid() or state_stat.st_mode & 0o077:
                     raise RuntimeError(f"Unsafe state directory: {path}")
     receipt_file = state / "receipt.json"
     if receipt_file.exists() or receipt_file.is_symlink():

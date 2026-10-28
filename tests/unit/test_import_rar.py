@@ -1004,7 +1004,8 @@ def test_one_inventory_per_invocation(rar_import, monkeypatch, mode):
     _, _, calls = rar_import
     argv = sys.argv[:]
     if mode in {"complete", "scan-retry"}:
-        monkeypatch.setattr(sys, "argv", [*argv, "--no-plex-scan"])
+        if mode == "scan-retry":
+            monkeypatch.setattr(sys, "argv", [*argv, "--no-plex-scan"])
         run_main()
         monkeypatch.setattr(sys, "argv", argv)
     if mode == "dry-run":
@@ -1231,3 +1232,39 @@ def test_digest_cache_checks_identity_before_and_after_hash(tmp_path, monkeypatc
     with pytest.raises(RuntimeError, match="changed"):
         verification.read(path)
     assert not verification.digests
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_inventory_digest_reuse_retains_only_targeted_fresh_input_check(
+    rar_import, monkeypatch, dry_run
+):
+    source, _, _ = rar_import
+    loose = source / "Movie.mkv"
+    loose.write_bytes(b"media")
+    reads = []
+    digest = archive.digest
+
+    def counted(path):
+        reads.append(path)
+        return digest(path)
+
+    monkeypatch.setattr(archive, "digest", counted)
+    if dry_run:
+        monkeypatch.setattr(sys, "argv", [*sys.argv, "--dry-run"])
+    run_main()
+    assert reads.count(source / "a.rar") == 1
+    # Inventory supplies loose matching and the pre-processing source hash.
+    # A real import still freshly hashes its input after processing.
+    assert reads.count(loose) == (1 if dry_run else 2)
+
+
+def test_cached_digest_rejects_changed_identity_without_rehash(tmp_path, monkeypatch):
+    path = tmp_path / "movie.mkv"
+    path.write_bytes(b"media")
+    verification = archive.Verification(tmp_path)
+    verification.read(path)
+    old = path.stat()
+    os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns + 1_000_000))
+    monkeypatch.setattr(archive, "digest", lambda *a: pytest.fail("silently rebased digest"))
+    with pytest.raises(RuntimeError, match="changed"):
+        verification.read(path)
