@@ -107,19 +107,32 @@ xbox-import Movie/ --no-plex-scan
 
 ### RAR archives
 
-Directory imports discover RAR archives recursively and extract them with `unrar x` before
-importing. Extraction uses a private `.xbox-import-*` staging directory beside the source;
-original archives and existing source files are preserved. Archive paths retain their directory
-structure. Destination collisions or extraction errors stop the batch before any imports.
-
-Each successfully imported staged media file is removed afterward. Failed, incompatible, or skipped
-media remains in staging, and the staging location is printed. Other extracted artifacts are removed
-only when all staged media has imported successfully. A failed Plex scan does not undo media imports
-or their cleanup.
-
-For archives, `--dry-run` only reports what would be extracted: it does not extract, create staging,
-or inspect archived media compatibility. Loose media is still previewed normally. Standalone media
+Directory imports inspect RAR metadata with `rarfile`; extraction uses the host-provided
+**RARLAB vendor `unrar`**, never an automatically selected alternative backend. Standalone media
 imports ignore neighboring archives.
+
+Existing manually extracted media is reused only after its full size and unpacked CRC32 match the
+archive member. Verified loose media is imported normally without extraction and is never deleted.
+Missing or corrupt media is recovered through private staging without overwriting source files.
+CRC32 detects accidental corruption, not authenticity. Metadata inspection does not prove that the
+compressed payload is readable. Encrypted archives, unsafe paths, and unsupported checksums remain
+unverified and fail safely rather than being accepted based on file existence.
+
+Import receipts and a stable lock live beside destination imports, outside the source. Receipts
+bind archive identity to prepared and published output hashes. A completed import is skipped only
+when its inputs and actual outputs still verify; transformed output is validated independently,
+not compared byte-for-byte with its source. Unknown existing destinations are never overwritten.
+Receipt errors, changed inputs or outputs, and permission failures stop the operation for review.
+Do not delete an actively used lock pathname or move/remove receipt state to bypass a conflict.
+
+Cleanup and Plex scanning are separate from import completion. Successfully imported staged media
+can be removed; manually extracted originals remain untouched. Pending cleanup or scanning can be
+retried without repeating a verified import. A failed Plex scan does not undo imported files.
+Staging and receipt storage need writable parent directories and enough free space; user and root
+runs must be able to access the same state or will fail safely.
+
+`--dry-run` performs no extraction, import, receipt update, lock creation, or staging/log writes.
+It cannot certify archived-media compatibility without extracting and probing that media.
 
 ### xbox-plex-scan
 
