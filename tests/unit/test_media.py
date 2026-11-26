@@ -13,8 +13,9 @@ from xbox_media_utils.models import AudioTrack, MediaInfo
 @pytest.mark.parametrize(
     ("bit_rate", "tags", "transfer", "height", "expected_rate", "recode"),
     [
-        ("20000001", {}, "smpte2084", 2160, 20_000_001, True),
-        ("20000000", {}, "smpte2084", 2160, 20_000_000, False),
+        ("40000001", {}, "smpte2084", 2160, 40_000_001, True),
+        ("40000000", {}, "smpte2084", 2160, 40_000_000, False),
+        ("39999999", {}, "smpte2084", 2160, 39_999_999, False),
         ("N/A", {"BPS-eng": "47755612"}, "smpte2084", 2160, 47_755_612, True),
         (None, {"BPS": "bad"}, "smpte2084", 2160, None, False),
         ("48000000", {}, "arib-std-b67", 2160, 48_000_000, False),

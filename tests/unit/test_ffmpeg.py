@@ -81,11 +81,11 @@ def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10(monkeypatch):
     assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p10le"
     assert cmd[cmd.index("-profile:v") + 1] == "main10"
     params = cmd[cmd.index("-x265-params") + 1].split(":")
-    expected = {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"}
+    expected = {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=40000", "vbv-bufsize=40000"}
     assert set(params) >= expected
     assert "max-cll=596,160" in params
     assert "bt2020" in cmd
-    for rate in (18_000_000, None):
+    for rate in (40_000_000, 39_999_999, None):
         info.video_bitrate_bps = rate
         other_recode = build_ffmpeg_cmd(info, Path("output.mkv"), use_vaapi=False)
         assert "vbv-maxrate=" not in " ".join(other_recode)
