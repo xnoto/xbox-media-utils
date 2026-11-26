@@ -63,6 +63,10 @@ xbox-recode process /path/to/library --no-plex-scan
 
 - Video: Pass through H.264 through 1080p60 and HEVC/VP9 through 4K60 when their profiles and bit
   depths are Xbox-compatible; transcode other video to HEVC
+- Recode UHD HDR10 HEVC Main 10 with a reported video average above 20 Mb/s (stream bitrate or
+  Matroska BPS, not the entire file bitrate). The Xbox workaround preserves 10-bit HDR10 and
+  uses Main Tier Level 5.1 with a 20 Mb/s video VBV cap. Unknown rates alone do not trigger a recode;
+  this is an assumed compatibility target, not a guaranteed Direct Play limit.
 - Converts H.264 above 1080p to HEVC while preserving its resolution and frame rate when they are
   already within 4K60; only video above 4K or 60 fps is reduced to the 4K60 media-app limit
 - Uses VAAPI where supported, with software fallback for MPEG-4 and filtered/10-bit conversions

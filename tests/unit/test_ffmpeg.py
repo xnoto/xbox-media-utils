@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from xbox_media_utils.ffmpeg import (
+    _hdr10_metadata,
     _is_vaapi_error,
     build_audio_ffmpeg_cmd,
     build_ffmpeg_cmd,
@@ -24,6 +25,72 @@ from xbox_media_utils.models import AudioTrack, MediaInfo
 @pytest.fixture(autouse=True)
 def stub_static_ffmpeg(monkeypatch):
     monkeypatch.setattr("xbox_media_utils.ffmpeg.ffmpeg_path", lambda: "ffmpeg")
+
+
+def test_hdr10_metadata_prefers_complete_frame_record(monkeypatch):
+    kind = "Mastering display metadata"
+    partial = {"side_data_type": kind, "max_luminance": "1000/1"}
+    complete = {
+        **partial,
+        "min_luminance": "1/200",
+        **{
+            f"{point}_{axis}": "1/2"
+            for point in ("green", "blue", "red", "white_point")
+            for axis in "xy"
+        },
+    }
+    data = {
+        "streams": [{"side_data_list": [partial]}],
+        "frames": [{"side_data_list": [complete]}],
+    }
+    monkeypatch.setattr("xbox_media_utils.ffmpeg.ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr(
+        "xbox_media_utils.ffmpeg.run_cmd",
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, json.dumps(data), ""),
+    )
+
+    assert _hdr10_metadata(Path("movie.mkv"))[1]["master-display"].endswith("L(10000000,50)")
+    data["frames"] = []
+    with pytest.raises(ValueError, match="Incomplete HDR10 static metadata"):
+        _hdr10_metadata(Path("movie.mkv"))
+
+
+def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10(monkeypatch):
+    monkeypatch.setattr(
+        "xbox_media_utils.ffmpeg._hdr10_metadata",
+        lambda path: ({"color_primaries": "bt2020"}, {"max-cll": "596,160"}),
+    )
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_profile="main 10",
+        video_width=3840,
+        video_height=2160,
+        video_bit_depth=10,
+        video_hdr=True,
+        video_hdr_type="hdr10",
+        needs_video_recode=True,
+        video_bitrate_bps=48_000_000,
+        video_stat_tags=("BPS-eng", "NUMBER_OF_BYTES"),
+    )
+
+    cmd = build_ffmpeg_cmd(info, Path("output.mkv"), use_vaapi=True)
+
+    assert "-hwaccel" not in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p10le"
+    assert cmd[cmd.index("-profile:v") + 1] == "main10"
+    params = cmd[cmd.index("-x265-params") + 1].split(":")
+    expected = {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"}
+    assert set(params) >= expected
+    assert "max-cll=596,160" in params
+    assert "bt2020" in cmd
+    for rate in (18_000_000, None):
+        info.video_bitrate_bps = rate
+        other_recode = build_ffmpeg_cmd(info, Path("output.mkv"), use_vaapi=False)
+        assert "vbv-maxrate=" not in " ".join(other_recode)
+    assert "BPS-eng=" in cmd
+    assert "NUMBER_OF_BYTES=" in cmd
 
 
 def test_build_ffmpeg_cmd_uses_mono_duplication_filter_for_mono_recode():
