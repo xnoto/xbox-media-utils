@@ -47,9 +47,8 @@ def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10():
     assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p10le"
     assert cmd[cmd.index("-profile:v") + 1] == "main10"
     params = cmd[cmd.index("-x265-params") + 1].split(":")
-    assert {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"} <= set(
-        params
-    )
+    expected = {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"}
+    assert set(params) >= expected
     assert "BPS-eng=" in cmd
     assert "NUMBER_OF_BYTES=" in cmd
 
