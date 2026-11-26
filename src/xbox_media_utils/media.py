@@ -174,6 +174,8 @@ def _video_bitrate_bps(stream: dict) -> Optional[int]:
     candidates = [stream.get("bit_rate"), tags.get("BPS")]
     candidates.extend(value for key, value in tags.items() if re.fullmatch(r"BPS-[A-Z]{3}", key))
     for value in candidates:
+        if value is None:
+            continue
         try:
             rate = int(value)
         except (TypeError, ValueError, OverflowError):

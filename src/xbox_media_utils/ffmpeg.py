@@ -173,7 +173,7 @@ def _hdr10_metadata(path: Path) -> tuple[dict[str, str], dict[str, str]]:
     if result.returncode != 0:
         raise ValueError("Could not read HDR10 metadata")
     data = json.loads(result.stdout)
-    stream = next(iter(data.get("streams", [])), {})
+    stream: dict = next(iter(data.get("streams", [])), {})
     color = {key: stream[key] for key in ("color_primaries", "color_space") if key in stream}
     static = {}
     coords = (
