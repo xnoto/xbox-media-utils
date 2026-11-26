@@ -383,9 +383,7 @@ def analyze_recode_needs(info: MediaInfo) -> None:
         info.video_recode_reason = "HEVC exceeds Xbox Main/Main10 4K60 support"
     elif uses_xbox_hdr10_cap(info):
         info.needs_video_recode = True
-        info.video_recode_reason = (
-            f"UHD HDR10 HEVC video exceeds the Xbox {XBOX_HDR10_MAX_VIDEO_KBPS / 1_000:g} Mb/s target"
-        )
+        info.video_recode_reason = f"UHD HDR10 HEVC video exceeds the Xbox {XBOX_HDR10_MAX_VIDEO_KBPS / 1_000:g} Mb/s target"
     elif info.video_codec == "vp9" and (
         exceeds_uhd_resolution(info)
         or exceeds_xbox_frame_rate(info)
