@@ -26,7 +26,11 @@ def stub_static_ffmpeg(monkeypatch):
     monkeypatch.setattr("xbox_media_utils.ffmpeg.ffmpeg_path", lambda: "ffmpeg")
 
 
-def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10():
+def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10(monkeypatch):
+    monkeypatch.setattr(
+        "xbox_media_utils.ffmpeg._hdr10_metadata",
+        lambda path: ({"color_primaries": "bt2020"}, {"max-cll": "596,160"}),
+    )
     info = MediaInfo(
         path=Path("movie.mkv"),
         video_codec="hevc",
@@ -37,6 +41,7 @@ def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10():
         video_hdr=True,
         video_hdr_type="hdr10",
         needs_video_recode=True,
+        video_bitrate_bps=48_000_000,
         video_stat_tags=("BPS-eng", "NUMBER_OF_BYTES"),
     )
 
@@ -49,6 +54,12 @@ def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10():
     params = cmd[cmd.index("-x265-params") + 1].split(":")
     expected = {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"}
     assert set(params) >= expected
+    assert "max-cll=596,160" in params
+    assert "bt2020" in cmd
+    for rate in (18_000_000, None):
+        info.video_bitrate_bps = rate
+        other_recode = build_ffmpeg_cmd(info, Path("output.mkv"), use_vaapi=False)
+        assert "vbv-maxrate=" not in " ".join(other_recode)
     assert "BPS-eng=" in cmd
     assert "NUMBER_OF_BYTES=" in cmd
 

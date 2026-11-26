@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
@@ -149,6 +150,53 @@ def run_ffmpeg_command(
         )
 
 
+def _hdr10_metadata(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Read coded color signaling and opening HDR10 static metadata."""
+    result = run_cmd(
+        [
+            ffprobe_path(),
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+#48",
+            "-show_streams",
+            "-show_frames",
+            "-show_entries",
+            "stream=color_primaries,color_space:stream_side_data:frame_side_data",
+            "-of",
+            "json",
+            str(path),
+        ]
+    )
+    if result.returncode != 0:
+        raise ValueError("Could not read HDR10 metadata")
+    data = json.loads(result.stdout)
+    stream = next(iter(data.get("streams", [])), {})
+    color = {key: stream[key] for key in ("color_primaries", "color_space") if key in stream}
+    static = {}
+    for unit in [stream, *data.get("frames", [])]:
+        for side in unit.get("side_data_list", []):
+            if side.get("side_data_type") == "Mastering display metadata":
+                xy = {
+                    key: round(Fraction(side[key]) * 50_000)
+                    for key in (
+                        "green_x", "green_y", "blue_x", "blue_y", "red_x", "red_y",
+                        "white_point_x", "white_point_y",
+                    )
+                }
+                maximum = round(Fraction(side["max_luminance"]) * 10_000)
+                minimum = round(Fraction(side["min_luminance"]) * 10_000)
+                static["master-display"] = (
+                    "G({green_x},{green_y})B({blue_x},{blue_y})R({red_x},{red_y})"
+                    "WP({white_point_x},{white_point_y})".format(**xy) + f"L({maximum},{minimum})"
+                )
+            elif side.get("side_data_type") == "Content light level metadata":
+                static["max-cll"] = f"{side['max_content']},{side['max_average']}"
+    return color, static
+
+
 def build_ffmpeg_cmd(
     info: MediaInfo,
     output_path: Path,
@@ -240,7 +288,12 @@ def build_ffmpeg_cmd(
                 # 10-bit SDR input is what we're recoding away from; force 8-bit Main.
                 cmd.extend(["-pix_fmt", "yuv420p"])
             if cap_hdr10:
-                cmd.extend(["-profile:v", "main10"])
+                color, static = _hdr10_metadata(info.path)
+                cmd.extend(["-profile:v", "main10", "-color_trc", "smpte2084"])
+                for field, option in (("color_primaries", "-color_primaries"), ("color_space", "-colorspace")):
+                    if field in color:
+                        cmd.extend([option, color[field]])
+                x265_params.extend(f"{key}={value}" for key, value in static.items())
                 x265_params.extend(
                     [
                         "hdr10=1",
@@ -498,6 +551,15 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
                 or video.get("level") != 153
             ):
                 return False, "Expected HEVC Main 10 Level 5.1 with HDR10/PQ signaling"
+            try:
+                source_color, source_static = _hdr10_metadata(input_info.path)
+                output_color, output_static = _hdr10_metadata(output_path)
+            except (ValueError, KeyError, TypeError, ZeroDivisionError):
+                return False, "Could not verify HDR10 metadata retention"
+            if source_color != output_color or any(
+                output_static.get(key) != value for key, value in source_static.items()
+            ):
+                return False, "Output changed or lost HDR10 color or static metadata"
 
         output_width = video.get("width")
         output_height = video.get("height")
@@ -654,7 +716,10 @@ def run_ffmpeg_with_fallback(
 
     # Second attempt: software decode/encode (no hwaccel)
     print("  Using software transcode...")
-    cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=False)
+    try:
+        cmd = build_ffmpeg_cmd(info, output_path, use_vaapi=False)
+    except (ValueError, KeyError, TypeError, ZeroDivisionError):
+        return False, "Could not prepare HDR10 metadata for encoding"
     proc = run_ffmpeg_command(
         cmd,
         pause_for_plex=pause_for_plex,

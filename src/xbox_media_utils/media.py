@@ -154,13 +154,15 @@ def detect_dovi_profile(filepath: Path) -> Optional[int]:
 
 
 def uses_xbox_hdr10_cap(info: MediaInfo) -> bool:
-    """Match HEVC Main 10 HDR10 above 1080p, excluding Dolby Vision."""
+    """Match above-1080p HDR10 HEVC Main 10 with video above the cap."""
     return (
         info.video_codec == "hevc"
         and info.video_profile == "main 10"
         and info.video_bit_depth == 10
         and info.video_hdr_type == "hdr10"
         and info.dovi_profile is None
+        and info.video_bitrate_bps is not None
+        and info.video_bitrate_bps > XBOX_HDR10_MAX_VIDEO_KBPS * 1_000
         and not fits_oriented_resolution(
             info.video_width, info.video_height, H264_MAX_WIDTH, H264_MAX_HEIGHT
         )
@@ -377,11 +379,7 @@ def analyze_recode_needs(info: MediaInfo) -> None:
     ):
         info.needs_video_recode = True
         info.video_recode_reason = "HEVC exceeds Xbox Main/Main10 4K60 support"
-    elif (
-        uses_xbox_hdr10_cap(info)
-        and info.video_bitrate_bps is not None
-        and info.video_bitrate_bps > XBOX_HDR10_MAX_VIDEO_KBPS * 1_000
-    ):
+    elif uses_xbox_hdr10_cap(info):
         info.needs_video_recode = True
         info.video_recode_reason = "UHD HDR10 HEVC video exceeds the Xbox 20 Mb/s target"
     elif info.video_codec == "vp9" and (
