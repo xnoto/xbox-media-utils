@@ -10,6 +10,46 @@ from xbox_media_utils.media import analyze_recode_needs, probe_file
 from xbox_media_utils.models import AudioTrack, MediaInfo
 
 
+@pytest.mark.parametrize(
+    ("bit_rate", "tags", "transfer", "height", "expected_rate", "recode"),
+    [
+        ("20000001", {}, "smpte2084", 2160, 20_000_001, True),
+        ("20000000", {}, "smpte2084", 2160, 20_000_000, False),
+        ("N/A", {"BPS-eng": "47755612"}, "smpte2084", 2160, 47_755_612, True),
+        (None, {"BPS": "bad"}, "smpte2084", 2160, None, False),
+        ("48000000", {}, "arib-std-b67", 2160, 48_000_000, False),
+        ("48000000", {}, "smpte2084", 1080, 48_000_000, False),
+    ],
+)
+def test_probe_hdr10_video_cap(monkeypatch, bit_rate, tags, transfer, height, expected_rate, recode):
+    payload = {
+        "streams": [
+            {
+                "codec_type": "video",
+                "codec_name": "hevc",
+                "profile": "Main 10",
+                "width": 3840 if height == 2160 else 1920,
+                "height": height,
+                "pix_fmt": "yuv420p10le",
+                "color_transfer": transfer,
+                "bit_rate": bit_rate,
+                "tags": tags,
+            }
+        ],
+        "format": {"bit_rate": "90000000"},
+    }
+    monkeypatch.setattr("xbox_media_utils.media.ffprobe_path", lambda: "ffprobe")
+    monkeypatch.setattr(
+        "xbox_media_utils.media.run_cmd",
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, json.dumps(payload), ""),
+    )
+
+    info = probe_file(Path("movie.mkv"))
+
+    assert info.video_bitrate_bps == expected_rate
+    assert info.needs_video_recode is recode
+
+
 def test_analyze_recode_needs_marks_opus_stereo_for_audio_recode():
     info = MediaInfo(
         path=Path("movie.mkv"),

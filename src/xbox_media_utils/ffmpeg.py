@@ -14,6 +14,7 @@ from typing import Optional
 from .constants import UHD_MAX_HEIGHT, UHD_MAX_WIDTH, XBOX_MAX_VIDEO_FPS
 from .core.plex_activity import PlexStatusError, count_active_plex_playbacks
 from .media import (
+    XBOX_HDR10_MAX_VIDEO_KBPS,
     exceeds_uhd_resolution,
     exceeds_xbox_frame_rate,
     ffmpeg_path,
@@ -21,6 +22,7 @@ from .media import (
     fits_oriented_resolution,
     parse_frame_rate,
     run_cmd,
+    uses_xbox_hdr10_cap,
 )
 from .models import MediaInfo
 
@@ -155,6 +157,8 @@ def build_ffmpeg_cmd(
     """Build ffmpeg command for transcoding."""
     cmd = [ffmpeg_path()]
     is_dolby_vision = info.video_hdr_type == "dolby vision"
+    cap_hdr10 = info.needs_video_recode and uses_xbox_hdr10_cap(info)
+    use_vaapi = use_vaapi and not cap_hdr10
 
     if info.needs_video_recode and use_vaapi and not is_dolby_vision:
         # Use GPU for both decode and encode to reduce CPU load
@@ -235,6 +239,19 @@ def build_ffmpeg_cmd(
             elif info.video_bit_depth and info.video_bit_depth >= 10:
                 # 10-bit SDR input is what we're recoding away from; force 8-bit Main.
                 cmd.extend(["-pix_fmt", "yuv420p"])
+            if cap_hdr10:
+                cmd.extend(["-profile:v", "main10"])
+                x265_params.extend(
+                    [
+                        "hdr10=1",
+                        "level-idc=5.1",
+                        "high-tier=0",
+                        f"vbv-maxrate={XBOX_HDR10_MAX_VIDEO_KBPS}",
+                        f"vbv-bufsize={XBOX_HDR10_MAX_VIDEO_KBPS}",
+                    ]
+                )
+                for tag in info.video_stat_tags:
+                    cmd.extend(["-metadata:s:v:0", f"{tag}="])
             if x265_params:
                 cmd.extend(["-x265-params", ":".join(x265_params)])
     else:
@@ -448,7 +465,10 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,pix_fmt",
+            (
+                "stream=codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,"
+                "pix_fmt,profile,color_transfer,level"
+            ),
             "-of",
             "json",
             str(output_path),
@@ -470,6 +490,14 @@ def validate_output(input_info: MediaInfo, output_path: Path) -> tuple[bool, str
         video = next(s for s in streams if s.get("codec_type") == "video")
         if input_info.needs_video_recode and video.get("codec_name") != "hevc":
             return False, f"Expected HEVC output, got {video.get('codec_name') or 'unknown'}"
+
+        if input_info.needs_video_recode and uses_xbox_hdr10_cap(input_info):
+            if (
+                video.get("profile") != "Main 10"
+                or video.get("color_transfer") != "smpte2084"
+                or video.get("level") != 153
+            ):
+                return False, "Expected HEVC Main 10 Level 5.1 with HDR10/PQ signaling"
 
         output_width = video.get("width")
         output_height = video.get("height")

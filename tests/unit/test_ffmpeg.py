@@ -26,6 +26,34 @@ def stub_static_ffmpeg(monkeypatch):
     monkeypatch.setattr("xbox_media_utils.ffmpeg.ffmpeg_path", lambda: "ffmpeg")
 
 
+def test_build_ffmpeg_cmd_caps_uhd_hdr10_while_preserving_main10():
+    info = MediaInfo(
+        path=Path("movie.mkv"),
+        video_codec="hevc",
+        video_profile="main 10",
+        video_width=3840,
+        video_height=2160,
+        video_bit_depth=10,
+        video_hdr=True,
+        video_hdr_type="hdr10",
+        needs_video_recode=True,
+        video_stat_tags=("BPS-eng", "NUMBER_OF_BYTES"),
+    )
+
+    cmd = build_ffmpeg_cmd(info, Path("output.mkv"), use_vaapi=True)
+
+    assert "-hwaccel" not in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "libx265"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p10le"
+    assert cmd[cmd.index("-profile:v") + 1] == "main10"
+    params = cmd[cmd.index("-x265-params") + 1].split(":")
+    assert {"hdr10=1", "level-idc=5.1", "high-tier=0", "vbv-maxrate=20000", "vbv-bufsize=20000"} <= set(
+        params
+    )
+    assert "BPS-eng=" in cmd
+    assert "NUMBER_OF_BYTES=" in cmd
+
+
 def test_build_ffmpeg_cmd_uses_mono_duplication_filter_for_mono_recode():
     info = MediaInfo(
         path=Path("movie.mkv"),

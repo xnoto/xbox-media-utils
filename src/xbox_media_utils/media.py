@@ -1,6 +1,7 @@
 """Media file probing and analysis utilities."""
 
 import json
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +21,12 @@ from .constants import (
     XBOX_MAX_VIDEO_FPS,
 )
 from .models import AudioTrack, MediaInfo, SubtitleTrack
+
+XBOX_HDR10_MAX_VIDEO_KBPS = 20_000
+_MATROSKA_VIDEO_STATS = re.compile(
+    r"(?:BPS|DURATION|NUMBER_OF_FRAMES|NUMBER_OF_BYTES|_STATISTICS_[A-Z_]+)(?:-[A-Z]{3})?",
+    re.IGNORECASE,
+)
 
 
 @lru_cache(maxsize=1)
@@ -146,6 +153,34 @@ def detect_dovi_profile(filepath: Path) -> Optional[int]:
     return None
 
 
+def uses_xbox_hdr10_cap(info: MediaInfo) -> bool:
+    """Match HEVC Main 10 HDR10 above 1080p, excluding Dolby Vision."""
+    return (
+        info.video_codec == "hevc"
+        and info.video_profile == "main 10"
+        and info.video_bit_depth == 10
+        and info.video_hdr_type == "hdr10"
+        and info.dovi_profile is None
+        and not fits_oriented_resolution(
+            info.video_width, info.video_height, H264_MAX_WIDTH, H264_MAX_HEIGHT
+        )
+    )
+
+
+def _video_bitrate_bps(stream: dict) -> Optional[int]:
+    tags = {key.upper(): value for key, value in stream.get("tags", {}).items()}
+    candidates = [stream.get("bit_rate"), tags.get("BPS")]
+    candidates.extend(value for key, value in tags.items() if re.fullmatch(r"BPS-[A-Z]{3}", key))
+    for value in candidates:
+        try:
+            rate = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if rate > 0:
+            return rate
+    return None
+
+
 def probe_file(filepath: Path) -> MediaInfo:
     """Probe media file with ffprobe and return MediaInfo."""
     info = MediaInfo(path=filepath)
@@ -180,6 +215,10 @@ def probe_file(filepath: Path) -> MediaInfo:
             info.video_codec = stream.get("codec_name", "").lower()
             info.video_profile = (stream.get("profile") or "").lower() or None
             info.video_pixel_format = stream.get("pix_fmt") or None
+            info.video_bitrate_bps = _video_bitrate_bps(stream)
+            info.video_stat_tags = tuple(
+                key for key in stream.get("tags", {}) if _MATROSKA_VIDEO_STATS.fullmatch(key)
+            )
             info.video_width = stream.get("width")
             info.video_height = stream.get("height")
             info.video_frame_rate = parse_frame_rate(
@@ -338,6 +377,13 @@ def analyze_recode_needs(info: MediaInfo) -> None:
     ):
         info.needs_video_recode = True
         info.video_recode_reason = "HEVC exceeds Xbox Main/Main10 4K60 support"
+    elif (
+        uses_xbox_hdr10_cap(info)
+        and info.video_bitrate_bps is not None
+        and info.video_bitrate_bps > XBOX_HDR10_MAX_VIDEO_KBPS * 1_000
+    ):
+        info.needs_video_recode = True
+        info.video_recode_reason = "UHD HDR10 HEVC video exceeds the Xbox 20 Mb/s target"
     elif info.video_codec == "vp9" and (
         exceeds_uhd_resolution(info)
         or exceeds_xbox_frame_rate(info)
