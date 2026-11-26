@@ -176,24 +176,39 @@ def _hdr10_metadata(path: Path) -> tuple[dict[str, str], dict[str, str]]:
     stream = next(iter(data.get("streams", [])), {})
     color = {key: stream[key] for key in ("color_primaries", "color_space") if key in stream}
     static = {}
-    for unit in [stream, *data.get("frames", [])]:
+    coords = (
+        "green_x",
+        "green_y",
+        "blue_x",
+        "blue_y",
+        "red_x",
+        "red_y",
+        "white_point_x",
+        "white_point_y",
+    )
+    seen = set()
+    for unit in [*data.get("frames", []), stream]:
         for side in unit.get("side_data_list", []):
             if side.get("side_data_type") == "Mastering display metadata":
-                xy = {
-                    key: round(Fraction(side[key]) * 50_000)
-                    for key in (
-                        "green_x", "green_y", "blue_x", "blue_y", "red_x", "red_y",
-                        "white_point_x", "white_point_y",
-                    )
-                }
+                seen.add("master-display")
+                if "master-display" in static or not all(
+                    key in side for key in (*coords, "max_luminance", "min_luminance")
+                ):
+                    continue
+                xy = {key: round(Fraction(side[key]) * 50_000) for key in coords}
                 maximum = round(Fraction(side["max_luminance"]) * 10_000)
                 minimum = round(Fraction(side["min_luminance"]) * 10_000)
-                static["master-display"] = (
+                display = (
                     "G({green_x},{green_y})B({blue_x},{blue_y})R({red_x},{red_y})"
-                    "WP({white_point_x},{white_point_y})".format(**xy) + f"L({maximum},{minimum})"
-                )
+                    "WP({white_point_x},{white_point_y})"
+                ).format(**xy)
+                static["master-display"] = f"{display}L({maximum},{minimum})"
             elif side.get("side_data_type") == "Content light level metadata":
-                static["max-cll"] = f"{side['max_content']},{side['max_average']}"
+                seen.add("max-cll")
+                if "max-cll" not in static and "max_content" in side and "max_average" in side:
+                    static["max-cll"] = f"{side['max_content']},{side['max_average']}"
+    if seen - static.keys():
+        raise ValueError("Incomplete HDR10 static metadata")
     return color, static
 
 
@@ -290,7 +305,10 @@ def build_ffmpeg_cmd(
             if cap_hdr10:
                 color, static = _hdr10_metadata(info.path)
                 cmd.extend(["-profile:v", "main10", "-color_trc", "smpte2084"])
-                for field, option in (("color_primaries", "-color_primaries"), ("color_space", "-colorspace")):
+                for field, option in (
+                    ("color_primaries", "-color_primaries"),
+                    ("color_space", "-colorspace"),
+                ):
                     if field in color:
                         cmd.extend([option, color[field]])
                 x265_params.extend(f"{key}={value}" for key, value in static.items())
