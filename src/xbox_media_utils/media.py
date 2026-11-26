@@ -22,7 +22,7 @@ from .constants import (
 )
 from .models import AudioTrack, MediaInfo, SubtitleTrack
 
-XBOX_HDR10_MAX_VIDEO_KBPS = 20_000
+XBOX_HDR10_MAX_VIDEO_KBPS = 40_000
 _MATROSKA_VIDEO_STATS = re.compile(
     r"(?:BPS|DURATION|NUMBER_OF_FRAMES|NUMBER_OF_BYTES|_STATISTICS_[A-Z_]+)(?:-[A-Z]{3})?",
     re.IGNORECASE,
@@ -383,7 +383,7 @@ def analyze_recode_needs(info: MediaInfo) -> None:
         info.video_recode_reason = "HEVC exceeds Xbox Main/Main10 4K60 support"
     elif uses_xbox_hdr10_cap(info):
         info.needs_video_recode = True
-        info.video_recode_reason = "UHD HDR10 HEVC video exceeds the Xbox 20 Mb/s target"
+        info.video_recode_reason = f"UHD HDR10 HEVC video exceeds the Xbox {XBOX_HDR10_MAX_VIDEO_KBPS / 1_000:g} Mb/s target"
     elif info.video_codec == "vp9" and (
         exceeds_uhd_resolution(info)
         or exceeds_xbox_frame_rate(info)
