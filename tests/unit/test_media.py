@@ -21,7 +21,9 @@ from xbox_media_utils.models import AudioTrack, MediaInfo
         ("48000000", {}, "smpte2084", 1080, 48_000_000, False),
     ],
 )
-def test_probe_hdr10_video_cap(monkeypatch, bit_rate, tags, transfer, height, expected_rate, recode):
+def test_probe_hdr10_video_cap(
+    monkeypatch, bit_rate, tags, transfer, height, expected_rate, recode
+):
     payload = {
         "streams": [
             {
